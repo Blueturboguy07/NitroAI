@@ -62,10 +62,10 @@ jobs:
           echo "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" \
             -T /usr/bin/codesign -T /usr/bin/security
-          # Apple Developer ID intermediate — completes the trust chain.
-          curl -fsSL -o "$RUNNER_TEMP/DeveloperIDG2CA.cer" \
-            https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer
-          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$KEYCHAIN" || true
+          # Apple Developer ID intermediates (checked into the repo) complete the
+          # trust chain — a .p12 has only the leaf. Both G1 and G2 are imported;
+          # the leaf is issued by whichever one, so this resolves it either way.
+          security import build-resources/apple-developer-id-intermediates.pem -k "$KEYCHAIN" || true
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KPW" "$KEYCHAIN" >/dev/null
           # Put our keychain first in the search list so signing finds the identity.
           security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
