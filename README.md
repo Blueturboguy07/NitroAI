@@ -26,18 +26,14 @@ Or browse every version on the [Releases page](https://github.com/Blueturboguy07
 
 Open the installer, drag NitroAI to Applications, launch it, and you're done. On first launch you choose how the AI runs (see below).
 
-**Unless the maintainer has added signing certificates, these builds aren't notarized, so your OS warns you the first time** (a one-time step — after the first open it launches normally forever):
+- **macOS** — the app is **signed with an Apple Developer ID and notarized by Apple**, so it just opens on a normal double-click, no warnings. 🎉
+- **Windows** — the installer is **not code-signed yet**, so Windows Defender **SmartScreen** will stop it the first time with a blue popup: *"Windows protected your PC."* This is expected for any new app without a (paid) Windows certificate — the app is fine. To run it:
+  1. Click the small **More info** link in that popup.
+  2. A **Run anyway** button appears at the bottom — click it. That's it; Windows remembers your choice and won't ask again.
 
-- **macOS** — you'll see *"Apple could not verify NitroAI is free of malware."* Either open **System Settings → Privacy & Security** and click **Open Anyway**, or run this once in **Terminal**:
-  ```bash
-  xattr -cr /Applications/NitroAI.app
-  ```
-  (Adjust the path if you put the app somewhere other than Applications.)
-- **Windows** — click *More info → Run anyway* on the SmartScreen prompt.
+  If you don't see "Run anyway," you can instead **right-click the downloaded `NitroAI-Setup-Windows.exe` → Properties**, tick **Unblock** near the bottom, click **OK**, then run it.
 
-> Maintainers with an Apple Developer / Windows code-signing certificate can make these warnings disappear entirely — see [Signing your own builds](#signing-your-own-builds).
-
-Signing the apps so these warnings disappear needs a paid Apple Developer ($99/yr) and Windows code-signing certificate — intentionally left out of this starting point.
+> **Maintainers:** the SmartScreen warning disappears entirely once the Windows build is signed with an Authenticode certificate (macOS is already signed/notarized in this repo). See [Signing your own builds](#signing-your-own-builds) — add the `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` secrets and it's automatic. (Note: brand-new Windows certs can still show SmartScreen until they build up download "reputation," unless you buy an EV certificate.)
 
 ## How it works
 
