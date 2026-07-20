@@ -46,7 +46,10 @@ module.exports = {
     hardenedRuntime: hasCert,
     entitlements: "build-resources/entitlements.mac.plist",
     entitlementsInherit: "build-resources/entitlements.mac.plist",
-    notarize: canNotarize ? { teamId: process.env.APPLE_TEAM_ID } : false,
+    // electron-builder 26 wants a boolean here; notarization reads
+    // APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID from the env
+    // (passed by the release workflow).
+    notarize: canNotarize,
   },
   dmg: { title: "NitroAI ${version}" },
   win: {
