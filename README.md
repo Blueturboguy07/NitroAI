@@ -14,18 +14,26 @@ NitroAI is an open-source, local-first study app. Point it at a document, a webs
 
 Grab the latest installer from the [**Releases page**](https://github.com/Blueturboguy07/NitroAI/releases/latest):
 
-### 👉 [Click this link to download for Mac](https://github.com/Blueturboguy07/NitroAI/releases/download/v0.1.0/NitroAI-0.1.0-arm64.dmg) &nbsp;(Apple Silicon — M1/M2/M3)
+### 👉 [Click this link to download for Mac](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-arm64.dmg) &nbsp;(Apple Silicon — M1/M2/M3)
 
-Got an older **Intel Mac**? [Download the Intel version instead.](https://github.com/Blueturboguy07/NitroAI/releases/download/v0.1.0/NitroAI-0.1.0-x64.dmg)
+Got an older **Intel Mac**? [Download the Intel version instead.](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-x64.dmg)
 
-### 👉 [Click this link to download for Windows](https://github.com/Blueturboguy07/NitroAI/releases/download/v0.1.0/NitroAI-Setup-0.1.0.exe) &nbsp;(untested — see warning above)
+### 👉 [Click this link to download for Windows](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-Setup-Windows.exe) &nbsp;(untested — see warning above)
 
 Or browse every version on the [Releases page](https://github.com/Blueturboguy07/NitroAI/releases/latest).
 
-Open the installer, launch NitroAI, and you're done — there's nothing else to install. On first launch you choose how the AI runs (see below). The builds are currently **unsigned**, so:
+Open the installer, drag NitroAI to Applications, launch it, and you're done. On first launch you choose how the AI runs (see below).
 
-- **macOS**: right-click the app → *Open* the first time (Gatekeeper blocks unsigned apps on double-click).
-- **Windows**: click *More info → Run anyway* on the SmartScreen prompt.
+**Because these builds aren't signed with a paid Apple/Microsoft certificate, your OS will warn you the first time:**
+
+- **macOS** — you'll see *"NitroAI is damaged and can't be opened."* It isn't damaged; that's just how macOS treats un-notarized downloads. Open **Terminal** and run this once, then launch normally:
+  ```bash
+  xattr -cr /Applications/NitroAI.app
+  ```
+  (That removes the "downloaded from the internet" quarantine flag. Adjust the path if you put the app somewhere other than Applications.)
+- **Windows** — click *More info → Run anyway* on the SmartScreen prompt.
+
+Signing the apps so these warnings disappear needs a paid Apple Developer ($99/yr) and Windows code-signing certificate — intentionally left out of this starting point.
 
 ## How it works
 
