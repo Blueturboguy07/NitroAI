@@ -1,0 +1,189 @@
+@import "tailwindcss";
+
+/* NitroAI design tokens — semantic vars swap per theme via [data-theme] on <html>.
+   Accent and geometry match docs/UI-SPEC.md; fonts substitute the commercial
+   Clarika with Quicksand (headings/UI) + Nunito (long-form body). */
+
+@theme {
+  --font-display: "Quicksand Variable", "Nunito", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Nunito", "Quicksand Variable", ui-sans-serif, system-ui, sans-serif;
+
+  --color-accent: #6923ff;
+  --color-accent-hover: #5a1de0;
+  --color-accent-soft: var(--nitro-accent-soft);
+  --color-accent-softer: var(--nitro-accent-softer);
+
+  --color-bg: var(--nitro-bg);
+  --color-panel: var(--nitro-panel);
+  --color-card: var(--nitro-card);
+  --color-card-hover: var(--nitro-card-hover);
+  --color-edge: var(--nitro-edge);
+  --color-ink: var(--nitro-ink);
+  --color-ink-dim: var(--nitro-ink-dim);
+  --color-ink-faint: var(--nitro-ink-faint);
+
+  --color-callout-bg: var(--nitro-callout-bg);
+  --color-callout-ink: var(--nitro-callout-ink);
+  --color-success-soft: var(--nitro-success-soft);
+  --color-danger-soft: var(--nitro-danger-soft);
+  --color-danger-ink: #dc2626;
+
+  --radius-card: 1rem;
+  --radius-modal: 1.25rem;
+
+  --shadow-soft: 0 1px 3px rgb(0 0 0 / 0.06), 0 4px 16px rgb(0 0 0 / 0.05);
+  --shadow-modal: 0 8px 40px rgb(0 0 0 / 0.18);
+}
+
+:root,
+:root[data-theme="light"] {
+  --nitro-bg: #ffffff;
+  --nitro-panel: #fafafa;
+  --nitro-card: #ffffff;
+  --nitro-card-hover: #f6f4fb;
+  --nitro-edge: #e4e4e7;
+  --nitro-ink: #27272a;
+  --nitro-ink-dim: #71717a;
+  --nitro-ink-faint: #a1a1aa;
+  --nitro-accent-soft: #dcc8fb;
+  --nitro-accent-softer: #f3ecfd;
+  --nitro-callout-bg: #faf3cd;
+  --nitro-callout-ink: #8a6d1a;
+  --nitro-danger-soft: #fde3dd;
+  --nitro-success-soft: #d3ecc9;
+}
+
+:root[data-theme="dark"] {
+  --nitro-bg: #18181b;
+  --nitro-panel: #1f1f23;
+  --nitro-card: #232327;
+  --nitro-card-hover: #2a2a30;
+  --nitro-edge: #33333a;
+  --nitro-ink: #f4f4f5;
+  --nitro-ink-dim: #a1a1aa;
+  --nitro-ink-faint: #71717a;
+  --nitro-accent-soft: #4c2a99;
+  --nitro-accent-softer: #2c2140;
+  --nitro-callout-bg: #3a3423;
+  --nitro-callout-ink: #e6cf6b;
+  --nitro-danger-soft: #46262a;
+  --nitro-success-soft: #24371f;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  background: var(--nitro-bg);
+  color: var(--nitro-ink);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+
+h1,
+h2,
+h3,
+h4,
+button,
+input,
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* text inputs and editor content remain selectable */
+input,
+textarea,
+[contenteditable="true"],
+.selectable {
+  user-select: text;
+  cursor: auto;
+}
+
+/* Rendered markdown (chat answers). Gives block spacing/typography without a
+   prose plugin. */
+.prose-nitro > * + * {
+  margin-top: 0.55rem;
+}
+.prose-nitro h1,
+.prose-nitro h2,
+.prose-nitro h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  margin-top: 0.9rem;
+  line-height: 1.3;
+}
+.prose-nitro h1 {
+  font-size: 1.25rem;
+}
+.prose-nitro h2 {
+  font-size: 1.1rem;
+}
+.prose-nitro h3 {
+  font-size: 1rem;
+}
+.prose-nitro ul {
+  list-style: disc;
+  padding-left: 1.25rem;
+}
+.prose-nitro ol {
+  list-style: decimal;
+  padding-left: 1.25rem;
+}
+.prose-nitro li {
+  margin-top: 0.2rem;
+}
+.prose-nitro strong {
+  font-weight: 700;
+}
+.prose-nitro a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.prose-nitro code {
+  background: var(--nitro-panel);
+  padding: 0.1em 0.35em;
+  border-radius: 0.3rem;
+  font-size: 0.85em;
+}
+.prose-nitro pre {
+  background: var(--nitro-panel);
+  border: 1px solid var(--nitro-edge);
+  border-radius: 0.6rem;
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+.prose-nitro pre code {
+  background: none;
+  padding: 0;
+}
+.prose-nitro table {
+  border-collapse: collapse;
+  width: 100%;
+}
+.prose-nitro th,
+.prose-nitro td {
+  border: 1px solid var(--nitro-edge);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+}
+.prose-nitro blockquote {
+  border-left: 3px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
+  padding-left: 0.9rem;
+  color: var(--nitro-ink-dim);
+  font-style: italic;
+}
+/* KaTeX: let long display equations scroll instead of overflowing the bubble. */
+.katex-display {
+  margin: 0.6rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.katex {
+  font-size: 1.02em;
+}
