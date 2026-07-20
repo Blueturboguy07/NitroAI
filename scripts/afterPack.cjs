@@ -16,9 +16,11 @@ const path = require("node:path");
 
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== "darwin") return;
-  // When a real Developer ID cert is present, electron-builder does the real
-  // signing (and notarization) itself after this hook — don't ad-hoc sign.
-  if (process.env.CSC_LINK) return;
+  // Always ad-hoc sign here as a FLOOR. If a real Developer ID cert is
+  // configured, electron-builder re-signs (with --force) over this afterward
+  // and notarizes; if signing gets skipped for any reason, we still ship a
+  // VALID ad-hoc signature rather than the broken linker signature that macOS
+  // reports as "damaged". This runs before electron-builder's own signing.
 
   const appName = context.packager.appInfo.productFilename; // "NitroAI"
   const appPath = path.join(context.appOutDir, `${appName}.app`);

@@ -16,7 +16,10 @@
  * secrets on GitHub.
  */
 
-const hasCert = !!process.env.CSC_LINK;
+// The release workflow sets MAC_SIGN=1 after it has built a signing keychain
+// that contains the Developer ID cert AND Apple's intermediate (a bare .p12
+// lacks the intermediate, so gating on CSC_LINK let untrusted certs through).
+const hasCert = process.env.MAC_SIGN === "1";
 const canNotarize =
   hasCert &&
   !!process.env.APPLE_ID &&
