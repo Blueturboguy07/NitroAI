@@ -1,116 +1,87 @@
 # NitroAI
 
-A free, open-source, local-first study app — turn lectures, PDFs, YouTube links,
-and audio into AI notes, flashcards, quizzes, podcasts, and a source-grounded
-chat. Desktop app for macOS + Windows (Tauri), and it runs in any browser for
-development. **No subscription, no paywalls, no billing** — pick a fully-local
-engine or bring your own OpenAI/Anthropic key.
+**Turn any lecture, PDF, or video into study notes, flashcards, quizzes, and a study chat — free, and private by default.**
 
-Licensed **AGPL-3.0**.
+NitroAI is an open-source, local-first study app. Point it at a document, a website, a YouTube link, or an audio file and it generates clean notes (with math), spaced-repetition flashcards, quizzes, and a chat that knows your material. You can run it **fully locally** (no account, no cloud, nothing leaves your machine) or **bring your own** OpenAI / Anthropic key for top-tier quality. There is no NitroAI subscription, ever.
 
-## Features
+> [!IMPORTANT]
+> **This is a starting point, not a finished product.** It's an open-source foundation meant to be forked, extended, and improved. It works and it's genuinely useful, but expect rough edges — treat it as a solid base to build on rather than a polished commercial app.
 
-| Surface | What it does |
-|---|---|
-| **Dashboard** | Create notes from a blank doc, audio, document (PDF/DOCX), or a website/YouTube link. Search (⌘K), folders, date-grouped recents. |
-| **AI Notes editor** | Block editor with a **`/` command menu** (headings, lists, to-do, quote, callout, code, equation, divider), KaTeX math, live-saved to local storage. |
-| **Assistant / Chat** | Source-grounded streaming chat about the note, as a full page or a collapsible side panel. |
-| **Flashcards** | Auto-generated, one concept per card, tagged by topic, with an FSRS spaced-repetition study loop (New / Learning / Mastered). |
-| **Quiz** | MCQ + true/false + fill-in-the-blank, difficulty levels, per-answer explanations, per-topic mastery, reset & retake. |
-| **Podcast** | Two-host dialogue generated from the note, with pronunciation-normalized TTS and MP3 download. |
-| **Export** | Any note to Markdown, PDF, or Word — your data is never locked in. |
+> [!WARNING]
+> **Not tested on Windows yet.** The app is developed and tested on macOS. The Windows build is produced by CI and *should* work, but it hasn't been verified on real hardware. Windows feedback and fixes are very welcome. On Windows, automatic setup of the local AI runtime (Ollama) isn't wired up yet — install [Ollama](https://ollama.com/download) once and NitroAI will use it; or just use a cloud key.
 
-## Engine: local or bring-your-own-key
+## Download
 
-You choose at onboarding (no default is forced):
+Grab the latest installer from the [**Releases page**](https://github.com/Blueturboguy07/NitroAI/releases/latest):
 
-- **Local** — everything runs on your machine via [Ollama](https://ollama.com)
-  for text/chat/embeddings. Private, offline, zero cost. (Local Whisper/Kokoro
-  for audio transcription + TTS is wired behind the same interface; install a
-  local Whisper server / Kokoro to enable those, or use a cloud key.)
-- **Bring your own key** — paste an OpenAI (`sk-…`) or Anthropic (`sk-ant-…`)
-  key; the provider is auto-detected. One key powers every feature. On the
-  desktop build the key is stored in the OS keychain; in the browser build it
-  falls back to `localStorage`.
+| Platform | File |
+| --- | --- |
+| **macOS** (Apple Silicon or Intel) | `NitroAI-<version>-<arch>.dmg` |
+| **Windows** (untested) | `NitroAI-Setup-<version>.exe` |
 
-Every feature is engine-agnostic — the same code streams tokens whether they
-come from local or cloud.
+Open the installer, launch NitroAI, and you're done — there's nothing else to install. On first launch you choose how the AI runs (see below). The builds are currently **unsigned**, so:
 
-### Large documents & YouTube
+- **macOS**: right-click the app → *Open* the first time (Gatekeeper blocks unsigned apps on double-click).
+- **Windows**: click *More info → Run anyway* on the SmartScreen prompt.
 
-- **Any-size documents:** note generation splits large sources into token-budgeted
-  sections (map), writes notes per section, and merges them (reduce), and every
-  model call retries with backoff on rate limits — so a big PDF or a low
-  tokens-per-minute key just runs slower instead of failing. Study tools generate
-  from the distilled notes, keeping their inputs small.
-- **YouTube:** YouTube's 2026 bot-gating makes browser caption fetches return
-  empty, so the reliable free path is **desktop-only**: the app runs `yt-dlp`
-  (captions first, else it extracts the audio) and transcribes with Whisper.
-  Install `yt-dlp` on your PATH (or bundle it as a Tauri sidecar). In the browser
-  build, paste-a-YouTube-link can't work — download the audio and use
-  "Record or upload audio" instead. (Note: automated YouTube extraction carries
-  real 2026 DMCA §1201 legal risk — keep it client-local and transient.)
-- **Audio size:** cloud Whisper caps uploads at ~25 MB; longer lectures need local
-  transcription (no cap) or splitting the file.
+## How it works
 
-## Run it
+NitroAI is a small desktop shell around a local web app. When you open it, the app **starts a tiny local server on your machine**, shows it in a window, keeps it alive, and shuts it down when you quit. That local server is what does the things a plain web page can't — extracting YouTube transcripts with `yt-dlp` and managing the local AI runtime — so **you never install those tools by hand.**
 
-**Requirements:** Node **≥ 20.19** or **≥ 22.12** (the Vite 7 dev server needs
-`crypto.hash`; Node 21.5 is too old for `npm run dev` specifically — the build
-still works on it). Rust + the [Tauri prerequisites](https://tauri.app/start/prerequisites/)
-only for the native desktop build.
+### Two ways to run the AI
+
+You pick one on first launch (and can switch any time in Settings):
+
+- **Fully local** — when you choose this, NitroAI automatically downloads and starts a local AI runtime ([Ollama](https://ollama.com)) and pulls a small, capable model (~2 GB, one time). Everything then runs on your device: no key, no cloud, no cost. *Provisioning only ever happens if you pick local — cloud users never download a model.*
+- **Bring your own key** — paste an OpenAI (`sk-…`) or Anthropic (`sk-ant-…`) key for the highest-quality notes, quizzes, chat, and podcast voices. The key is stored in your OS keychain and used only to call your provider directly.
+
+Your notes and generated content live only on your machine (in the app's local database); you can export everything from Settings at any time.
+
+## For developers
+
+Requires **Node ≥ 20.19** (Node 21.x is not supported — use 20.19+ or 22 LTS).
 
 ```bash
+git clone https://github.com/Blueturboguy07/NitroAI.git
+cd NitroAI
 npm install
 
-# Web dev (fastest; needs Node ≥ 20.19 / 22.12)
-npm run dev            # http://localhost:1420
-
-# Or preview a production build (works on any Node)
-npm run build
-npm run preview        # http://localhost:4173
-
-# Desktop app (macOS/Windows) — first Rust build takes a few minutes
-npm run tauri dev
-npm run tauri build    # ship ONLY via this, never bare cargo
+npm run dev      # Vite dev server (hot reload) — includes the YouTube helper
+npm run serve    # build once, then serve the app + helpers at http://localhost:4180
+npm run app      # build, then launch the full desktop shell (Electron)
 ```
 
-To actually generate content you need an engine: either add a cloud key in
-onboarding/Settings, or run `ollama serve` with a model pulled (e.g.
-`ollama pull qwen2.5:7b`) and choose **Local**.
-
-## Test
+Build installers locally:
 
 ```bash
-npm test          # vitest — 94 unit/integration tests
-npm run typecheck # tsc --noEmit
+npm run dist:mac   # → release/NitroAI-<version>-<arch>.dmg
+npm run dist:win   # → release/NitroAI-Setup-<version>.exe
 ```
 
-Covered: engine providers (mocked streaming/structured/transcribe), storage +
-repository, FSRS scheduler + quiz mastery, ingestion routing + YouTube parsing,
-markdown↔blocks round-trip, and the full note-creation pipeline (multi-source
-ingest with per-file status, transcription, blank notes) against a fake engine.
+Or let CI do it: push a tag (`git tag v0.1.0 && git push --tags`) and the
+[release workflow](.github/workflows/release.yml) builds macOS + Windows
+installers and attaches them to a GitHub Release.
 
-## Architecture
+Other scripts: `npm test` (Vitest), `npm run typecheck`.
+
+### Project layout
 
 ```
-src/lib/
-  types.ts            domain model (Note, Block, Flashcard, QuizQuestion, Job…)
-  engine/             Engine interface + OpenAI / Anthropic / Local (Ollama) impls
-  db/                 Store interface + IndexedDB (app) and in-memory (test) impls, Repo
-  prompts/            versioned prompt templates + JSON schemas
-  generation/         notes, flashcards, quiz, chat, podcast tasks + note pipeline
-  study/              FSRS scheduler + per-topic quiz mastery
-  ingest/             text / url / youtube / pdf / docx / audio → normalized text
-  markdown.ts         blocks ↔ markdown, inline/block/KaTeX rendering
-  export.ts           Markdown / PDF / Word export
-  app.tsx             React context: opens the DB, builds the active engine
-src/components/        BlockEditor, Assistant, Flashcards/Quiz/Podcast views, modals
-src/pages/             Dashboard, NoteView, Settings, Onboarding
-src-tauri/             Tauri shell + OS-keychain commands for the API key
+src/            React app (UI + all generation/engine/ingest logic, TypeScript)
+  lib/engine/   provider abstraction: OpenAI, Anthropic, and local Ollama
+  lib/ingest/   text / url / youtube / pdf / docx / audio → normalized text
+  lib/generation/  notes, flashcards, quiz, podcast, chat
+server/         the local server the desktop shell runs
+  httpServer.mjs  serves the built app + /api/youtube-extract + /api/local/*
+  ytdlp.mjs       yt-dlp download + caption/audio extraction
+  ollama.mjs      Ollama install / serve / model-pull lifecycle
+electron/       the desktop shell (starts the server, opens the window)
 ```
 
-The app logic lives in TypeScript so every feature works in the browser and is
-unit-testable without a Rust build or model download. Native local inference
-(whisper.cpp / llama.cpp / Kokoro via Rust FFI) slots in behind the existing
-`Engine` interface.
+## Tech
+
+React 19 · Vite · Tailwind · Electron shell · Ollama (local) · OpenAI / Anthropic (cloud) · KaTeX · FSRS spaced repetition. No backend, no telemetry, no account.
+
+## License
+
+[AGPL-3.0-or-later](LICENSE). Fork it, ship it, improve it — just keep it open.

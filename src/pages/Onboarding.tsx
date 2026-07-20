@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { Cloud, Cpu, KeyRound, PenLine } from "lucide-react";
 import { detectProvider, saveApiKey } from "../lib/engine/keys";
 import { getEnginePrefs } from "../lib/prefs";
+import { localSetupStatus } from "../lib/localSetup";
+import LocalSetupModal from "../components/LocalSetupModal";
 import { useApp } from "../lib/app";
 import type { EngineMode } from "../lib/types";
 
@@ -13,15 +15,33 @@ export default function Onboarding() {
   const [mode, setMode] = useState<EngineMode | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
   const provider = detectProvider(apiKey.trim());
   const ready = mode === "local" || (mode === "cloud" && provider !== null);
+
+  function enter(nextMode: EngineMode) {
+    savePrefs({ ...getEnginePrefs(), mode: nextMode, onboarded: true });
+    navigate("/", { replace: true });
+  }
 
   async function finish() {
     if (!mode || busy) return;
     setBusy(true);
-    if (mode === "cloud") await saveApiKey(apiKey.trim());
-    savePrefs({ ...getEnginePrefs(), mode, onboarded: true });
-    navigate("/", { replace: true });
+    if (mode === "cloud") {
+      await saveApiKey(apiKey.trim());
+      enter("cloud");
+      return;
+    }
+    // Local: provision Ollama first IF a setup server is present and not already
+    // ready. On a static/dev host with no server, proceed and let the engine
+    // use a manually-running Ollama.
+    const status = await localSetupStatus();
+    const alreadyReady = status?.serving && status.hasChatModel && status.hasEmbedModel;
+    if (status && !alreadyReady) {
+      setSetupOpen(true);
+      return;
+    }
+    enter("local");
   }
 
   return (
@@ -90,6 +110,17 @@ export default function Onboarding() {
       >
         {busy ? "Setting up…" : "Get started"}
       </button>
+
+      {setupOpen && (
+        <LocalSetupModal
+          onDone={() => enter("local")}
+          onCancel={() => {
+            setSetupOpen(false);
+            setBusy(false);
+            setMode("cloud");
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -26,5 +26,7 @@ node_modules
 dist
 target
 .DS_Store
+# electron-builder output
+release/
 # private UI reference material - never commit
 docs/ui-reference/

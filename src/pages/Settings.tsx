@@ -17,6 +17,8 @@ import {
   saveApiKey,
 } from "../lib/engine/keys";
 import { createEngine } from "../lib/engine";
+import { localSetupStatus } from "../lib/localSetup";
+import LocalSetupModal from "../components/LocalSetupModal";
 import { exportMarkdown, downloadText } from "../lib/export";
 import type { EngineMode } from "../lib/types";
 
@@ -33,6 +35,7 @@ export default function Settings() {
     "idle",
   );
   const [msg, setMsg] = useState("");
+  const [localSetup, setLocalSetup] = useState(false);
   const provider = detectProvider(key.trim());
 
   useEffect(() => {
@@ -40,6 +43,19 @@ export default function Settings() {
   }, []);
 
   function setMode(mode: EngineMode) {
+    if (mode === "local") {
+      // Switching to local provisions Ollama the same way onboarding does —
+      // install/start/pull as needed — before the engine is used.
+      void localSetupStatus().then((s) => {
+        const ready = s?.serving && s.hasChatModel && s.hasEmbedModel;
+        if (s && !ready) {
+          setLocalSetup(true);
+          return;
+        }
+        savePrefs({ ...prefs, mode });
+      });
+      return;
+    }
     savePrefs({ ...prefs, mode });
   }
 
@@ -226,6 +242,16 @@ export default function Settings() {
           </div>
         </div>
       </div>
+
+      {localSetup && (
+        <LocalSetupModal
+          onDone={() => {
+            setLocalSetup(false);
+            savePrefs({ ...prefs, mode: "local" });
+          }}
+          onCancel={() => setLocalSetup(false)}
+        />
+      )}
     </div>
   );
 }

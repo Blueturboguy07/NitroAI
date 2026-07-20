@@ -3,14 +3,70 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "description": "Free, local-first AI study notes — turn any lecture, PDF, or video into notes, flashcards, quizzes, and a study chat.",
+  "author": "NitroAI contributors",
+  "license": "AGPL-3.0-or-later",
+  "main": "electron/main.mjs",
+  "engines": {
+    "node": ">=20.19"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "serve": "node server/standalone.mjs",
+    "app": "npm run build && electron .",
+    "app:nobuild": "electron .",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri"
+  },
+  "build": {
+    "appId": "com.nitroai.app",
+    "productName": "NitroAI",
+    "copyright": "NitroAI contributors",
+    "files": [
+      "dist/**",
+      "server/**",
+      "electron/**",
+      "!**/*.map"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.mjs"
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "build-resources"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "category": "public.app-category.education",
+      "artifactName": "NitroAI-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "title": "NitroAI ${version}"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "artifactName": "NitroAI-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "linux": {
+      "target": ["AppImage"],
+      "category": "Education"
+    }
   },
   "dependencies": {
     "@fontsource-variable/quicksand": "^5.3.0",
@@ -41,6 +97,8 @@
     "@types/react-dom": "^19.1.6",
     "@types/uuid": "^11.0.0",
     "@vitejs/plugin-react": "^4.6.0",
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
     "jsdom": "^29.1.1",
     "tailwindcss": "^4.3.3",
     "typescript": "~5.8.3",
