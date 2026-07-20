@@ -1,7 +1,7 @@
 {
   "name": "nitroai",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "Free, local-first AI study notes — turn any lecture, PDF, or video into notes, flashcards, quizzes, and a study chat.",
   "author": "NitroAI contributors",
@@ -39,13 +39,20 @@
     "extraMetadata": {
       "main": "electron/main.mjs"
     },
+    "afterPack": "./scripts/afterPack.cjs",
     "directories": {
       "output": "release",
       "buildResources": "build-resources"
     },
     "mac": {
       "target": [
-        { "target": "dmg", "arch": ["arm64", "x64"] }
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
       ],
       "category": "public.app-category.education",
       "artifactName": "NitroAI-mac-${arch}.${ext}",
@@ -56,7 +63,12 @@
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "artifactName": "NitroAI-Setup-Windows.${ext}"
     },
@@ -66,7 +78,9 @@
       "allowToChangeInstallationDirectory": true
     },
     "linux": {
-      "target": ["AppImage"],
+      "target": [
+        "AppImage"
+      ],
       "category": "Education"
     }
   },
