@@ -14,10 +14,13 @@ NitroAI is an open-source, local-first study app. Point it at a document, a webs
 
 Grab the latest installer from the [**Releases page**](https://github.com/Blueturboguy07/NitroAI/releases/latest):
 
-| Platform | File |
-| --- | --- |
-| **macOS** (Apple Silicon or Intel) | `NitroAI-<version>-<arch>.dmg` |
-| **Windows** (untested) | `NitroAI-Setup-<version>.exe` |
+### 👉 [Click this link to download for Mac](https://github.com/Blueturboguy07/NitroAI/releases/download/v0.1.0/NitroAI-0.1.0-arm64.dmg) &nbsp;(Apple Silicon — M1/M2/M3)
+
+Got an older **Intel Mac**? [Download the Intel version instead.](https://github.com/Blueturboguy07/NitroAI/releases/download/v0.1.0/NitroAI-0.1.0-x64.dmg)
+
+### 👉 [Click this link to download for Windows](https://github.com/Blueturboguy07/NitroAI/releases/download/v0.1.0/NitroAI-Setup-0.1.0.exe) &nbsp;(untested — see warning above)
+
+Or browse every version on the [Releases page](https://github.com/Blueturboguy07/NitroAI/releases/latest).
 
 Open the installer, launch NitroAI, and you're done — there's nothing else to install. On first launch you choose how the AI runs (see below). The builds are currently **unsigned**, so:
 
