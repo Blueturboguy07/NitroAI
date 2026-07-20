@@ -12,7 +12,9 @@ NitroAI is an open-source, local-first study app. Point it at a document, a webs
 
 ## Download
 
-Grab the latest installer from the [**Releases page**](https://github.com/Blueturboguy07/NitroAI/releases/latest):
+**This section is for people who just want to use the app.** If you're a developer, don't download the installer — [run it from source](#for-developers) instead, so you get the code and can change it.
+
+Grab the latest installer:
 
 ### 👉 [Click this link to download for Mac](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-arm64.dmg) &nbsp;(Apple Silicon — M1/M2/M3)
 
@@ -24,14 +26,16 @@ Or browse every version on the [Releases page](https://github.com/Blueturboguy07
 
 Open the installer, drag NitroAI to Applications, launch it, and you're done. On first launch you choose how the AI runs (see below).
 
-**Because these builds aren't signed with a paid Apple/Microsoft certificate, your OS will warn you the first time:**
+**Unless the maintainer has added signing certificates, these builds aren't notarized, so your OS warns you the first time** (a one-time step — after the first open it launches normally forever):
 
-- **macOS** — you'll see *"NitroAI is damaged and can't be opened."* It isn't damaged; that's just how macOS treats un-notarized downloads. Open **Terminal** and run this once, then launch normally:
+- **macOS** — you'll see *"Apple could not verify NitroAI is free of malware."* Either open **System Settings → Privacy & Security** and click **Open Anyway**, or run this once in **Terminal**:
   ```bash
   xattr -cr /Applications/NitroAI.app
   ```
-  (That removes the "downloaded from the internet" quarantine flag. Adjust the path if you put the app somewhere other than Applications.)
+  (Adjust the path if you put the app somewhere other than Applications.)
 - **Windows** — click *More info → Run anyway* on the SmartScreen prompt.
+
+> Maintainers with an Apple Developer / Windows code-signing certificate can make these warnings disappear entirely — see [Signing your own builds](#signing-your-own-builds).
 
 Signing the apps so these warnings disappear needs a paid Apple Developer ($99/yr) and Windows code-signing certificate — intentionally left out of this starting point.
 
@@ -88,6 +92,29 @@ server/         the local server the desktop shell runs
   ollama.mjs      Ollama install / serve / model-pull lifecycle
 electron/       the desktop shell (starts the server, opens the window)
 ```
+
+## Signing your own builds
+
+By default the release workflow produces **ad-hoc-signed** builds — valid, but not notarized, so users get a one-time OS warning. If you have signing certificates, add them as **GitHub repo secrets** (Settings → Secrets and variables → Actions) and every tagged build is automatically signed and notarized — installers then open with **no warning at all**. No code changes needed; the build detects the secrets.
+
+**macOS** (needs a paid [Apple Developer](https://developer.apple.com) account and a *Developer ID Application* certificate):
+
+| Secret | What it is |
+| --- | --- |
+| `CSC_LINK` | Your Developer ID Application cert, exported from Keychain as a `.p12`, then base64-encoded: `base64 -i cert.p12 \| pbcopy` |
+| `CSC_KEY_PASSWORD` | The password you set when exporting the `.p12` |
+| `APPLE_ID` | Your Apple ID email |
+| `APPLE_APP_SPECIFIC_PASSWORD` | An [app-specific password](https://support.apple.com/en-us/102654) for that Apple ID (not your login password) |
+| `APPLE_TEAM_ID` | Your 10-character Team ID (Apple Developer → Membership) |
+
+**Windows** (optional — needs an Authenticode code-signing certificate):
+
+| Secret | What it is |
+| --- | --- |
+| `WIN_CSC_LINK` | Your code-signing cert as a base64-encoded `.pfx` |
+| `WIN_CSC_KEY_PASSWORD` | The `.pfx` password |
+
+Then cut a release: `git tag v0.1.3 && git push --tags`. That's it — nothing else to configure.
 
 ## Tech
 

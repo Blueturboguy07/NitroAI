@@ -39,13 +39,20 @@ jobs:
       - name: Build installer
         run: npm run ${{ matrix.script }}
         env:
-          # No paid Developer ID cert (this is a starting point — see README).
-          # `mac.identity: null` still ad-hoc signs the arm64 app, which is
-          # required for it to run at all on Apple Silicon and downgrades
-          # Gatekeeper from "damaged" to the milder right-click-to-open dialog.
-          # Do NOT set CSC_IDENTITY_AUTO_DISCOVERY=false — that would suppress
-          # even the ad-hoc signature and reintroduce the "damaged" error.
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # --- Signing (optional) ---
+          # If these repo secrets are set, macOS builds are signed with your
+          # Developer ID and notarized (opens with no warning); Windows builds
+          # are Authenticode-signed. If they're absent, the build falls back to
+          # a valid ad-hoc signature (opens via right-click → Open / xattr).
+          # See "Signing your own builds" in README.md.
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
       - name: Upload installers as workflow artifacts
         uses: actions/upload-artifact@v4

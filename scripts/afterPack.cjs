@@ -16,6 +16,9 @@ const path = require("node:path");
 
 exports.default = async function afterPack(context) {
   if (context.electronPlatformName !== "darwin") return;
+  // When a real Developer ID cert is present, electron-builder does the real
+  // signing (and notarization) itself after this hook — don't ad-hoc sign.
+  if (process.env.CSC_LINK) return;
 
   const appName = context.packager.appInfo.productFilename; // "NitroAI"
   const appPath = path.join(context.appOutDir, `${appName}.app`);
