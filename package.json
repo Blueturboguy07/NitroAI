@@ -29,6 +29,7 @@
     "appId": "com.nitroai.app",
     "productName": "NitroAI",
     "copyright": "NitroAI contributors",
+    "publish": null,
     "files": [
       "dist/**",
       "server/**",
