@@ -7,8 +7,8 @@ NitroAI is an open-source, local-first study app. Point it at a document, a webs
 > [!IMPORTANT]
 > **This is a starting point, not a finished product.** It's an open-source foundation meant to be forked, extended, and improved. It works and it's genuinely useful, but expect rough edges — treat it as a solid base to build on rather than a polished commercial app.
 
-> [!WARNING]
-> **Not tested on Windows yet.** The app is developed and tested on macOS. The Windows build is produced by CI and *should* work, but it hasn't been verified on real hardware. Windows feedback and fixes are very welcome. On Windows, automatic setup of the local AI runtime (Ollama) isn't wired up yet — install [Ollama](https://ollama.com/download) once and NitroAI will use it; or just use a cloud key.
+> [!NOTE]
+> **Windows and macOS are both tested and working.** One Windows caveat: automatic setup of the local AI runtime (Ollama) isn't wired up there yet — on Windows, install [Ollama](https://ollama.com/download) once and NitroAI will use it, or just use a cloud key. (On macOS it's fully automatic.)
 
 ## Download
 
@@ -20,7 +20,7 @@ Grab the latest installer:
 
 Got an older **Intel Mac**? [Download the Intel version instead.](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-x64.dmg)
 
-### 👉 [Click this link to download for Windows](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-Setup-Windows.exe) &nbsp;(untested — see warning above)
+### 👉 [Click this link to download for Windows](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-Setup-Windows.exe)
 
 Or browse every version on the [Releases page](https://github.com/Blueturboguy07/NitroAI/releases/latest).
 
