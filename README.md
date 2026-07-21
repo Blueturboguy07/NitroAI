@@ -2,6 +2,27 @@
 
 **Turn any lecture, PDF, or video into study notes, flashcards, quizzes, and a study chat — free, and private by default.**
 
+## ⬇️ Download the app
+
+**Click the link for your computer — it downloads, you open it, that's it.**
+
+| Your computer | Download |
+| --- | --- |
+| 🍎 **Mac** — Apple Silicon (M1 / M2 / M3 / M4 — most Macs since ~2020) | **[⬇ Download for Mac](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-arm64.dmg)** |
+| 🍎 **Mac** — older Intel models | **[⬇ Download for Intel Mac](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-x64.dmg)** |
+| 🪟 **Windows** — 10 or 11 | **[⬇ Download for Windows](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-Setup-Windows.exe)** |
+
+*Not sure which Mac you have?* Click the Apple menu () at the top-left of your screen → **About This Mac**. If it says **Apple M1/M2/M3/M4**, use the Apple Silicon link; if it says **Intel**, use the Intel link.
+
+**After it downloads,** open the file and follow the installer. The very first time you launch NitroAI:
+
+- **On Mac** — it just opens on a double-click, no warnings. ✅ (The app is signed and notarized by Apple.)
+- **On Windows** — you'll see a blue *"Windows protected your PC"* box the first time. That's normal for a brand-new app — click **More info → Run anyway** and it opens (and won't ask again). [Step-by-step below.](#first-time-opening-on-windows)
+
+> **Just want to use NitroAI?** The links above are everything you need — enjoy. **Are you a developer?** Don't download the installer; [run it from source](#for-developers) instead so you have the code. You can also browse all versions on the [Releases page](https://github.com/Blueturboguy07/NitroAI/releases/latest).
+
+---
+
 NitroAI is an open-source, local-first study app. Point it at a document, a website, a YouTube link, or an audio file and it generates clean notes (with math), spaced-repetition flashcards, quizzes, and a chat that knows your material. You can run it **fully locally** (no account, no cloud, nothing leaves your machine) or **bring your own** OpenAI / Anthropic key for top-tier quality. There is no NitroAI subscription, ever.
 
 > [!IMPORTANT]
@@ -10,28 +31,14 @@ NitroAI is an open-source, local-first study app. Point it at a document, a webs
 > [!NOTE]
 > **Windows and macOS are both tested and working.** One Windows caveat: automatic setup of the local AI runtime (Ollama) isn't wired up there yet — on Windows, install [Ollama](https://ollama.com/download) once and NitroAI will use it, or just use a cloud key. (On macOS it's fully automatic.)
 
-## Download
+### First time opening on Windows
 
-**This section is for people who just want to use the app.** If you're a developer, don't download the installer — [run it from source](#for-developers) instead, so you get the code and can change it.
+The Windows installer isn't code-signed yet, so Windows Defender **SmartScreen** stops it the first time with a blue popup: *"Windows protected your PC."* The app is fine — this happens to every new app that doesn't have a (paid) Windows certificate. To run it:
 
-Grab the latest installer:
+1. Click the small **More info** link in that popup.
+2. A **Run anyway** button appears at the bottom — click it. Windows remembers your choice and won't ask again.
 
-### 👉 [Click this link to download for Mac](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-arm64.dmg) &nbsp;(Apple Silicon — M1/M2/M3)
-
-Got an older **Intel Mac**? [Download the Intel version instead.](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-x64.dmg)
-
-### 👉 [Click this link to download for Windows](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-Setup-Windows.exe)
-
-Or browse every version on the [Releases page](https://github.com/Blueturboguy07/NitroAI/releases/latest).
-
-Open the installer, drag NitroAI to Applications, launch it, and you're done. On first launch you choose how the AI runs (see below).
-
-- **macOS** — the app is **signed with an Apple Developer ID and notarized by Apple**, so it just opens on a normal double-click, no warnings. 🎉
-- **Windows** — the installer is **not code-signed yet**, so Windows Defender **SmartScreen** will stop it the first time with a blue popup: *"Windows protected your PC."* This is expected for any new app without a (paid) Windows certificate — the app is fine. To run it:
-  1. Click the small **More info** link in that popup.
-  2. A **Run anyway** button appears at the bottom — click it. That's it; Windows remembers your choice and won't ask again.
-
-  If you don't see "Run anyway," you can instead **right-click the downloaded `NitroAI-Setup-Windows.exe` → Properties**, tick **Unblock** near the bottom, click **OK**, then run it.
+If you don't see "Run anyway," instead **right-click the downloaded `NitroAI-Setup-Windows.exe` → Properties**, tick **Unblock** near the bottom, click **OK**, then run it.
 
 > **Maintainers:** the SmartScreen warning disappears entirely once the Windows build is signed with an Authenticode certificate (macOS is already signed/notarized in this repo). See [Signing your own builds](#signing-your-own-builds) — add the `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` secrets and it's automatic. (Note: brand-new Windows certs can still show SmartScreen until they build up download "reputation," unless you buy an EV certificate.)
 
