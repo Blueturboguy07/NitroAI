@@ -78,7 +78,9 @@ async function downloadBinary(binDir, onLog) {
   fs.writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
   onLog?.("Unpacking the local AI runtime…");
   // The archive expands to `ollama` plus its support libraries, all in binDir.
-  execFileSync("tar", ["xzf", tgz, "-C", binDir]);
+  // Use the absolute path — a Finder-launched signed app gets a minimal PATH
+  // that may not resolve a bare `tar`. /usr/bin/tar is always present on macOS.
+  execFileSync("/usr/bin/tar", ["xzf", tgz, "-C", binDir]);
   fs.rmSync(tgz, { force: true });
   const bin = path.join(binDir, "ollama");
   if (!fs.existsSync(bin)) {
