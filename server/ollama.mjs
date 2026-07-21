@@ -12,7 +12,7 @@
  * on the local-mode selection.
  */
 
-import { spawn, execFile } from "node:child_process";
+import { spawn, execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -41,12 +41,11 @@ export function isProvisioned(binDir) {
   }
 }
 
-function assetUrl() {
-  const base = "https://github.com/ollama/ollama/releases/latest/download";
-  if (process.platform === "darwin") return `${base}/ollama-darwin`;
-  if (process.platform === "win32") return `${base}/ollama-windows-amd64.zip`;
-  return `${base}/ollama-linux-amd64`;
-}
+/* The official standalone macOS archive: a .tgz holding the `ollama` binary
+   plus its runtime libraries (llama-server, libggml-*). We extract the whole
+   thing so the binary can find its libs. */
+const OLLAMA_DARWIN_TGZ =
+  "https://github.com/ollama/ollama/releases/latest/download/ollama-darwin.tgz";
 
 /* Locate an ollama binary: PATH first (Homebrew / official installer), then our
    own downloaded copy. Returns null if neither exists yet. */
@@ -62,23 +61,31 @@ async function findBinary(binDir) {
   return fs.existsSync(local) ? local : null;
 }
 
-/* Download the standalone binary into binDir. macOS/Linux ship a single
-   executable; Windows ships a zip we don't unpack here (Windows users are
-   steered to the official installer — see notes in provision()). */
+/* Download + unpack the official macOS build into binDir. Windows/Linux users
+   are steered to the official installer (see the message below), which is why
+   provision() only auto-downloads on macOS. */
 async function downloadBinary(binDir, onLog) {
   fs.mkdirSync(binDir, { recursive: true });
-  if (process.platform === "win32") {
+  if (process.platform !== "darwin") {
     throw new Error(
-      "Automatic Ollama download isn't supported on Windows yet. Install Ollama from https://ollama.com/download, then reopen NitroAI.",
+      "Automatic Ollama setup isn't available on this platform yet. Install Ollama from https://ollama.com/download, then reopen NitroAI (or use a cloud key instead).",
     );
   }
-  const dest = path.join(binDir, "ollama");
-  onLog?.("Downloading the local AI runtime (Ollama)…");
-  const res = await fetch(assetUrl(), { headers: { "user-agent": "NitroAI" } });
+  onLog?.("Downloading the local AI runtime (Ollama)… this is a one-time ~150 MB download.");
+  const res = await fetch(OLLAMA_DARWIN_TGZ, { headers: { "user-agent": "NitroAI" } });
   if (!res.ok) throw new Error(`Couldn't download Ollama (${res.status})`);
-  fs.writeFileSync(dest, Buffer.from(await res.arrayBuffer()));
-  fs.chmodSync(dest, 0o755);
-  return dest;
+  const tgz = path.join(binDir, "ollama-darwin.tgz");
+  fs.writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
+  onLog?.("Unpacking the local AI runtime…");
+  // The archive expands to `ollama` plus its support libraries, all in binDir.
+  execFileSync("tar", ["xzf", tgz, "-C", binDir]);
+  fs.rmSync(tgz, { force: true });
+  const bin = path.join(binDir, "ollama");
+  if (!fs.existsSync(bin)) {
+    throw new Error("The Ollama download didn't contain the expected files. Try again.");
+  }
+  fs.chmodSync(bin, 0o755);
+  return bin;
 }
 
 export async function isServing() {
