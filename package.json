@@ -1,9 +1,9 @@
 {
   "name": "nitroai",
   "private": true,
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
-  "description": "Free, local-first AI study notes — turn any lecture, PDF, or video into notes, flashcards, quizzes, and a study chat.",
+  "description": "Free, local-first AI study notes \u2014 turn any lecture, PDF, or video into notes, flashcards, quizzes, and a study chat.",
   "author": "NitroAI contributors",
   "license": "AGPL-3.0-or-later",
   "main": "electron/main.mjs",
