@@ -2,10 +2,11 @@
  *
  * A non-technical user should never install or start Ollama by hand. When (and
  * ONLY when) they choose the local engine, the shell provisions it:
- *   1. find an existing `ollama` binary, else download the official standalone
- *      build into the app's data dir
- *   2. start `ollama serve` (with CORS opened to the app origin) if not already
- *      running, and keep a handle so it's torn down on quit
+ *   1. if Ollama is already answering on its port, use it as-is — nothing to
+ *      install. Otherwise find an existing `ollama` binary, else download the
+ *      official standalone build into the app's data dir
+ *   2. start `ollama serve` (with CORS opened to the app origin), and keep a
+ *      handle so it's torn down on quit
  *   3. pull the default chat + embedding models, streaming progress
  *
  * Nothing here runs for cloud/BYO-key users — the shell calls provision() only
@@ -14,6 +15,7 @@
 
 import { spawn, execFile, execFileSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -84,8 +86,29 @@ async function fetchArchive(onLog) {
   throw downloadFailed(detail);
 }
 
-/* Locate an ollama binary: PATH first (Homebrew / official installer), then our
-   own downloaded copy. Returns null if neither exists yet. */
+/* Where Ollama actually lands, by absolute path. PATH alone is not enough: an
+   app launched from Finder or Spotlight inherits launchd's minimal PATH
+   (/usr/bin:/bin:/usr/sbin:/sbin), NOT the user's shell PATH, so `which ollama`
+   finds nothing even when Ollama is plainly installed. Covered here:
+     /opt/homebrew/bin  Homebrew on Apple Silicon
+     /usr/local/bin     Homebrew on Intel, and the symlink Ollama.app offers to
+                        create on first launch
+     Ollama.app/Contents/Resources/ollama  the official app's own CLI, which is
+                        there even when the user declined that symlink */
+function knownInstallPaths() {
+  if (process.platform === "win32") return [];
+  const found = ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"];
+  if (process.platform === "darwin") {
+    for (const apps of ["/Applications", path.join(os.homedir(), "Applications")]) {
+      found.push(path.join(apps, "Ollama.app", "Contents", "Resources", "ollama"));
+    }
+  }
+  return found;
+}
+
+/* Locate an ollama binary: PATH first, then the well-known install locations
+   (Homebrew / official installer), then our own downloaded copy. Returns null
+   if none exists yet. */
 async function findBinary(binDir) {
   try {
     const { stdout } = await execFileP(process.platform === "win32" ? "where" : "which", ["ollama"]);
@@ -93,6 +116,9 @@ async function findBinary(binDir) {
     if (p && fs.existsSync(p)) return p;
   } catch {
     /* not on PATH */
+  }
+  for (const p of knownInstallPaths()) {
+    if (fs.existsSync(p)) return p;
   }
   const local = path.join(binDir, process.platform === "win32" ? "ollama.exe" : "ollama");
   return fs.existsSync(local) ? local : null;
@@ -182,8 +208,9 @@ async function hasModel(name) {
 }
 
 /* Pull a model, forwarding Ollama's streamed progress lines to onProgress as
-   { model, status, percent }. Resolves when the pull is complete. */
-async function pullModel(bin, name, onProgress) {
+   { model, status, percent }. Resolves when the pull is complete. Talks to the
+   running server over HTTP, so it needs no binary of its own. */
+async function pullModel(name, onProgress) {
   if (await hasModel(name)) {
     onProgress?.({ model: name, status: "already installed", percent: 100 });
     return;
@@ -228,17 +255,22 @@ export async function provision({ binDir, appOrigin, models, emit } = {}) {
   const embed = models?.embed ?? DEFAULT_EMBED_MODEL;
   const log = (message) => emit?.({ phase: "log", message });
 
-  let bin = await findBinary(binDir);
-  if (!bin) {
-    emit?.({ phase: "installing", message: "Setting up the local AI runtime…" });
-    bin = await downloadBinary(binDir, log);
+  /* A user who already has Ollama RUNNING needs no binary at all — everything
+     below this point speaks to it over HTTP. Asking the server first means we
+     never install a second copy for someone who was already set up. */
+  if (!(await isServing())) {
+    let bin = await findBinary(binDir);
+    if (!bin) {
+      emit?.({ phase: "installing", message: "Setting up the local AI runtime…" });
+      bin = await downloadBinary(binDir, log);
+    }
+    emit?.({ phase: "starting", message: "Starting the local AI runtime…" });
+    await ensureServing(bin, appOrigin, log);
   }
-  emit?.({ phase: "starting", message: "Starting the local AI runtime…" });
-  await ensureServing(bin, appOrigin, log);
 
   for (const model of [chat, embed]) {
     emit?.({ phase: "pulling", model, message: `Downloading model ${model}…` });
-    await pullModel(bin, model, (p) =>
+    await pullModel(model, (p) =>
       emit?.({ phase: "pulling", model: p.model, percent: p.percent, message: p.status }),
     );
   }
