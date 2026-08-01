@@ -47,6 +47,43 @@ export function isProvisioned(binDir) {
 const OLLAMA_DARWIN_TGZ =
   "https://github.com/ollama/ollama/releases/latest/download/ollama-darwin.tgz";
 
+/* The way out when we can't install Ollama for the user. Every failure of the
+   automatic path must end with this, so the setup modal ("Try again" / "Use a
+   cloud key instead") is never a dead end that just shows a status code. */
+const MANUAL_INSTALL_HINT =
+  "Install Ollama from https://ollama.com/download, then reopen NitroAI (or use a cloud key instead).";
+
+/* `detail` (an HTTP status, or a network error) is kept for bug reports, but it
+   is never the whole message — the user needs to know what to DO. */
+function downloadFailed(detail) {
+  return new Error(
+    "Couldn't download the local AI runtime automatically. This is usually a temporary " +
+      "network problem, or GitHub (where the download is hosted) being briefly unavailable, " +
+      `so "Try again" often works. Otherwise: ${MANUAL_INSTALL_HINT} (Details: ${detail}.)`,
+  );
+}
+
+/* Fetch the archive, retrying once after a short backoff. The failures seen in
+   the wild have been transient — a flaky connection, or GitHub momentarily
+   refusing the release redirect — and a second attempt usually succeeds. */
+async function fetchArchive(onLog) {
+  let detail = "unknown error";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const res = await fetch(OLLAMA_DARWIN_TGZ, { headers: { "user-agent": "NitroAI" } });
+      if (res.ok) return res;
+      detail = `HTTP ${res.status}`;
+    } catch (err) {
+      detail = err instanceof Error ? err.message : String(err);
+    }
+    if (attempt === 1) {
+      onLog?.("The download didn't start — retrying once…");
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+  throw downloadFailed(detail);
+}
+
 /* Locate an ollama binary: PATH first (Homebrew / official installer), then our
    own downloaded copy. Returns null if neither exists yet. */
 async function findBinary(binDir) {
@@ -67,24 +104,28 @@ async function findBinary(binDir) {
 async function downloadBinary(binDir, onLog) {
   fs.mkdirSync(binDir, { recursive: true });
   if (process.platform !== "darwin") {
-    throw new Error(
-      "Automatic Ollama setup isn't available on this platform yet. Install Ollama from https://ollama.com/download, then reopen NitroAI (or use a cloud key instead).",
-    );
+    throw new Error(`Automatic Ollama setup isn't available on this platform yet. ${MANUAL_INSTALL_HINT}`);
   }
   onLog?.("Downloading the local AI runtime (Ollama)… this is a one-time ~150 MB download.");
-  const res = await fetch(OLLAMA_DARWIN_TGZ, { headers: { "user-agent": "NitroAI" } });
-  if (!res.ok) throw new Error(`Couldn't download Ollama (${res.status})`);
+  const res = await fetchArchive(onLog);
   const tgz = path.join(binDir, "ollama-darwin.tgz");
   fs.writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
   onLog?.("Unpacking the local AI runtime…");
   // The archive expands to `ollama` plus its support libraries, all in binDir.
   // Use the absolute path — a Finder-launched signed app gets a minimal PATH
   // that may not resolve a bare `tar`. /usr/bin/tar is always present on macOS.
-  execFileSync("/usr/bin/tar", ["xzf", tgz, "-C", binDir]);
+  try {
+    execFileSync("/usr/bin/tar", ["xzf", tgz, "-C", binDir]);
+  } catch (err) {
+    // Almost always a truncated/partial download — same dead end for the user.
+    fs.rmSync(tgz, { force: true });
+    const why = String(err?.stderr ?? err?.message ?? err).trim().split("\n")[0];
+    throw downloadFailed(`the archive couldn't be unpacked — ${why}`);
+  }
   fs.rmSync(tgz, { force: true });
   const bin = path.join(binDir, "ollama");
   if (!fs.existsSync(bin)) {
-    throw new Error("The Ollama download didn't contain the expected files. Try again.");
+    throw downloadFailed("the archive didn't contain the expected files");
   }
   fs.chmodSync(bin, 0o755);
   return bin;
