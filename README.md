@@ -11,6 +11,7 @@
 | 🍎 **Mac** — Apple Silicon (M1 / M2 / M3 / M4 — most Macs since ~2020) | **[⬇ Download for Mac](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-arm64.dmg)** |
 | 🍎 **Mac** — older Intel models | **[⬇ Download for Intel Mac](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-mac-x64.dmg)** |
 | 🪟 **Windows** — 10 or 11 | **[⬇ Download for Windows](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-Setup-Windows.exe)** |
+| 🐧 **Linux** — 64-bit | **[⬇ Download for Linux](https://github.com/Blueturboguy07/NitroAI/releases/latest/download/NitroAI-Linux-x86_64.AppImage)** |
 
 *Not sure which Mac you have?* Click the Apple menu () at the top-left of your screen → **About This Mac**. If it says **Apple M1/M2/M3/M4**, use the Apple Silicon link; if it says **Intel**, use the Intel link.
 
@@ -18,6 +19,7 @@
 
 - **On Mac** — it just opens on a double-click, no warnings. ✅ (The app is signed and notarized by Apple.)
 - **On Windows** — you'll see a blue *"Windows protected your PC"* box the first time. That's normal for a brand-new app — click **More info → Run anyway** and it opens (and won't ask again). [Step-by-step below.](#first-time-opening-on-windows)
+- **On Linux** — a downloaded AppImage isn't executable yet. Either right-click it → **Properties** → tick **Allow executing file as program**, or run `chmod +x NitroAI-Linux-x86_64.AppImage` once. Then double-click it (or run `./NitroAI-Linux-x86_64.AppImage`). There's nothing to install.
 
 > **Just want to use NitroAI?** The links above are everything you need — enjoy. **Are you a developer?** Don't download the installer; [run it from source](#for-developers) instead so you have the code. You can also browse all versions on the [Releases page](https://github.com/Blueturboguy07/NitroAI/releases/latest).
 
@@ -29,7 +31,7 @@ NitroAI is an open-source, local-first study app. Point it at a document, a webs
 > **This is a starting point, not a finished product.** It's an open-source foundation meant to be forked, extended, and improved. It works and it's genuinely useful, but expect rough edges — treat it as a solid base to build on rather than a polished commercial app.
 
 > [!NOTE]
-> **Windows and macOS are both tested and working.** One Windows caveat: automatic setup of the local AI runtime (Ollama) isn't wired up there yet — on Windows, install [Ollama](https://ollama.com/download) once and NitroAI will use it, or just use a cloud key. (On macOS it's fully automatic.)
+> **Windows, macOS, and Linux are all tested and working.** One caveat on Windows and Linux: automatic setup of the local AI runtime (Ollama) isn't wired up there yet — install [Ollama](https://ollama.com/download) once (on Linux, your package manager has it) and NitroAI will find and use it, or just use a cloud key. (On macOS it's fully automatic.)
 
 ### First time opening on Windows
 
@@ -72,13 +74,14 @@ npm run app      # build, then launch the full desktop shell (Electron)
 Build installers locally:
 
 ```bash
-npm run dist:mac   # → release/NitroAI-<version>-<arch>.dmg
-npm run dist:win   # → release/NitroAI-Setup-<version>.exe
+npm run dist:mac    # → release/NitroAI-<version>-<arch>.dmg
+npm run dist:win    # → release/NitroAI-Setup-<version>.exe
+npm run dist:linux  # → release/NitroAI-Linux-x86_64.AppImage
 ```
 
 Or let CI do it: push a tag (`git tag v0.1.0 && git push --tags`) and the
-[release workflow](.github/workflows/release.yml) builds macOS + Windows
-installers and attaches them to a GitHub Release.
+[release workflow](.github/workflows/release.yml) builds macOS, Windows, and
+Linux installers and attaches them to a GitHub Release.
 
 Other scripts: `npm test` (Vitest), `npm run typecheck`.
 
