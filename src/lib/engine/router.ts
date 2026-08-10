@@ -27,7 +27,10 @@ export function unsupportedMessage(task: Task): string {
     case "chat":
       return "This engine doesn't support chat. Switch to a cloud key or a chat-capable local model.";
     case "transcription":
-      return "This engine doesn't support speech-to-text. Add an OpenAI key or install a local Whisper server.";
+      // Local speech-to-text (whisper.cpp) isn't implemented yet — there's no
+      // setting anywhere to point NitroAI at a local Whisper server, so don't
+      // suggest one. The one real path today is a cloud key.
+      return "Local mode can't transcribe audio yet. Add an OpenAI key in Settings — NitroAI uses OpenAI's Whisper API automatically, nothing else to connect.";
     case "tts":
       return "This engine doesn't support text-to-speech. Add an OpenAI key, or wait for local Kokoro support.";
     case "embeddings":

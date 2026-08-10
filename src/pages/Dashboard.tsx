@@ -318,6 +318,7 @@ export default function Dashboard() {
         <CreateNoteModal
           source={modal}
           busy={!!job}
+          engine={engine}
           onGenerate={handleGenerate}
           onClose={() => setModal(null)}
         />
