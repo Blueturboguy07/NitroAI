@@ -27,6 +27,21 @@ const DATA_FOLDER =
     ? "%APPDATA%\\NitroAI"
     : "~/Library/Application Support/NitroAI";
 
+/* The embedding model is never chat-selectable, so it's filtered out of the
+   "already downloaded" list below. */
+const EMBED_MODEL = "nomic-embed-text";
+const DEFAULT_CHAT_MODEL = "qwen2.5:3b";
+
+/* A small curated set of known-good chat models to offer even when the user
+   hasn't pulled anything yet. Picking one that isn't downloaded triggers the
+   normal setup flow, scoped to just that model. */
+const RECOMMENDED_MODELS: { id: string; label: string; note: string }[] = [
+  { id: "qwen2.5:3b", label: "Qwen 2.5 3B", note: "Default · ~2 GB · fastest, smallest context" },
+  { id: "qwen2.5:7b", label: "Qwen 2.5 7B", note: "~4.7 GB · stronger reasoning" },
+  { id: "llama3.1:8b", label: "Llama 3.1 8B", note: "~4.9 GB · much larger context window" },
+  { id: "phi4:14b", label: "Phi-4 14B", note: "~9 GB · best quality, needs a capable machine" },
+];
+
 export default function Settings() {
   const { prefs, savePrefs, repo } = useApp();
   const [key, setKey] = useState("");
@@ -36,18 +51,42 @@ export default function Settings() {
   );
   const [msg, setMsg] = useState("");
   const [localSetup, setLocalSetup] = useState(false);
+  /* Model tags Ollama already has pulled, from GET /api/local/status — lets
+     the picker below offer real, already-downloaded models instead of only
+     ever knowing about the hardcoded default. */
+  const [localModels, setLocalModels] = useState<string[]>([]);
+  /* Set while a picker choice needs a download before it can become active. */
+  const [pendingModel, setPendingModel] = useState<string | null>(null);
   const provider = detectProvider(key.trim());
+  const activeModel = prefs.localModel || DEFAULT_CHAT_MODEL;
 
   useEffect(() => {
     loadApiKey().then(setKey);
   }, []);
 
+  function refreshLocalModels() {
+    void localSetupStatus({ chatModel: prefs.localModel || undefined }).then((s) => {
+      if (s) setLocalModels(s.models);
+    });
+  }
+
+  // Show already-pulled models as soon as the page loads if local mode is
+  // active, not only after the user re-toggles the Local/Cloud pill.
+  useEffect(() => {
+    if (prefs.mode === "local") refreshLocalModels();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefs.mode]);
+
   function setMode(mode: EngineMode) {
     if (mode === "local") {
       // Switching to local provisions Ollama the same way onboarding does —
-      // install/start/pull as needed — before the engine is used.
-      void localSetupStatus().then((s) => {
+      // install/start/pull as needed — before the engine is used. Checked
+      // against the model the user already chose/pulled before (if any), not
+      // just the hardcoded default, so a returning user isn't asked to
+      // download again every time they flip this toggle.
+      void localSetupStatus({ chatModel: prefs.localModel || undefined }).then((s) => {
         const ready = s?.serving && s.hasChatModel && s.hasEmbedModel;
+        if (s) setLocalModels(s.models);
         if (s && !ready) {
           setLocalSetup(true);
           return;
@@ -57,6 +96,21 @@ export default function Settings() {
       return;
     }
     savePrefs({ ...prefs, mode });
+  }
+
+  /* Switch the active local model. If it's already pulled, this is instant —
+     no download, no setup modal, just a preference update (this is the "at
+     least respect an existing pull" path). If it isn't pulled yet, run the
+     normal setup flow scoped to just this model. */
+  function chooseModel(id: string) {
+    if (id === activeModel) return;
+    const alreadyPulled = localModels.includes(id) || localModels.includes(`${id}:latest`);
+    if (alreadyPulled) {
+      savePrefs({ ...prefs, mode: "local", localModel: id });
+      return;
+    }
+    setPendingModel(id);
+    setLocalSetup(true);
   }
 
   async function saveKey() {
@@ -200,13 +254,54 @@ export default function Settings() {
               </div>
             ) : (
               <div className="mt-5 rounded-xl border border-edge bg-panel p-4">
-                <p className="text-sm font-semibold">Local models</p>
+                <p className="text-sm font-semibold">Local model</p>
                 <p className="mt-1 text-sm text-ink-faint">
-                  Speech-to-text, note generation, podcast voices, and search run on
-                  this device via a local runtime (Ollama for text; Whisper &amp;
-                  Kokoro for audio). Start Ollama, or switch to a cloud key for the
-                  audio features.
+                  Note generation, flashcards, quizzes, and chat run on this device
+                  via Ollama. Pick any model you've already pulled, or download a
+                  different one — your choice is remembered, so NitroAI won't ask
+                  you to download a model again next time.
                 </p>
+
+                <label className="mt-3 block">
+                  <span className="text-xs font-semibold text-ink-faint">Chat model</span>
+                  <select
+                    value={activeModel}
+                    onChange={(e) => chooseModel(e.target.value)}
+                    className="mt-1.5 w-full rounded-xl border border-edge bg-card px-3 py-2.5 text-sm outline-none focus:border-accent"
+                  >
+                    {localModels.filter((m) => m !== EMBED_MODEL && m !== `${EMBED_MODEL}:latest`).length > 0 && (
+                      <optgroup label="Already downloaded">
+                        {localModels
+                          .filter((m) => m !== EMBED_MODEL && m !== `${EMBED_MODEL}:latest`)
+                          .map((m) => (
+                            <option key={m} value={m}>
+                              {RECOMMENDED_MODELS.find((r) => r.id === m)?.label ?? m}
+                            </option>
+                          ))}
+                      </optgroup>
+                    )}
+                    <optgroup label="Download a model">
+                      {RECOMMENDED_MODELS.filter(
+                        (r) => !localModels.includes(r.id) && !localModels.includes(`${r.id}:latest`),
+                      ).map((r) => (
+                        <option key={r.id} value={r.id}>
+                          {r.label} — {r.note}
+                        </option>
+                      ))}
+                    </optgroup>
+                  </select>
+                </label>
+                <p className="mt-2 text-xs text-ink-faint">
+                  Currently using <span className="font-semibold text-ink">{activeModel}</span>.
+                  Speech-to-text (Whisper) and podcast voices (Kokoro) aren't wired up
+                  locally yet — those need a cloud key.
+                </p>
+                {localModels.length === 0 && (
+                  <p className="mt-2 text-xs font-semibold text-danger-ink">
+                    Ollama isn't reachable right now — make sure it's running, then
+                    reopen Settings.
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -245,11 +340,18 @@ export default function Settings() {
 
       {localSetup && (
         <LocalSetupModal
-          onDone={() => {
+          models={{ chatModel: pendingModel ?? (prefs.localModel || undefined) }}
+          onDone={(chatModel) => {
             setLocalSetup(false);
-            savePrefs({ ...prefs, mode: "local" });
+            const resolved = chatModel ?? pendingModel ?? prefs.localModel;
+            savePrefs({ ...prefs, mode: "local", localModel: resolved });
+            setPendingModel(null);
+            refreshLocalModels();
           }}
-          onCancel={() => setLocalSetup(false)}
+          onCancel={() => {
+            setLocalSetup(false);
+            setPendingModel(null);
+          }}
         />
       )}
     </div>

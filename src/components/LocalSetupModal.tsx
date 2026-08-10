@@ -1,15 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { Cpu, Loader2, TriangleAlert } from "lucide-react";
-import { runLocalSetup, type LocalSetupEvent } from "../lib/localSetup";
+import { runLocalSetup, type DesiredModels, type LocalSetupEvent } from "../lib/localSetup";
 
 /* Progress UI for provisioning the local engine. Runs the setup stream once on
    mount; calls onDone when the local AI is ready, or surfaces an error with a
-   retry. Shown only after the user has chosen the local engine. */
+   retry. Shown only after the user has chosen the local engine.
+
+   `models` requests a specific chat/embed model (from a picker, or one already
+   chosen in a prior session) instead of always pulling the hardcoded default.
+   `onDone` reports back which chat model actually ended up provisioned, so the
+   caller can persist it — that persistence is what stops the app from asking
+   the user to download a model again on the next launch. */
 export default function LocalSetupModal({
+  models,
   onDone,
   onCancel,
 }: {
-  onDone: () => void;
+  models?: DesiredModels;
+  onDone: (chatModel?: string) => void;
   onCancel: () => void;
 }) {
   const [message, setMessage] = useState("Preparing your local AI…");
@@ -18,6 +26,7 @@ export default function LocalSetupModal({
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const started = useRef(false);
+  const provisionedChatModel = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     started.current = false;
@@ -42,19 +51,25 @@ export default function LocalSetupModal({
       }
     };
 
-    runLocalSetup((e) => {
-      setMessage(label(e));
-      setPercent(typeof e.percent === "number" ? e.percent : null);
-      setDetail(e.model && e.message && e.message !== e.model ? `${e.model} · ${e.message}` : "");
-    }, controller.signal)
-      .then(onDone)
+    runLocalSetup(
+      (e) => {
+        setMessage(label(e));
+        setPercent(typeof e.percent === "number" ? e.percent : null);
+        setDetail(e.model && e.message && e.message !== e.model ? `${e.model} · ${e.message}` : "");
+        if (e.phase === "done" && e.chat) provisionedChatModel.current = e.chat;
+      },
+      controller.signal,
+      models,
+    )
+      .then(() => onDone(provisionedChatModel.current))
       .catch((err) => {
         if (controller.signal.aborted) return;
         setError(err instanceof Error ? err.message : "Local setup failed.");
       });
 
     return () => controller.abort();
-  }, [attempt, onDone]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attempt, onDone, models?.chatModel, models?.embedModel]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">

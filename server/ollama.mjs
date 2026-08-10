@@ -197,14 +197,29 @@ async function ensureServing(bin, appOrigin, onLog) {
   }
 }
 
-async function hasModel(name) {
+/* All model tags Ollama currently has pulled, e.g. ["qwen2.5:3b", "llama3.1:8b"].
+   Empty array (not a throw) when Ollama isn't reachable, so callers can use it
+   unconditionally. This is what lets the UI offer a picker over models the user
+   already downloaded instead of only ever knowing about our one hardcoded default. */
+export async function listModels() {
   try {
-    const res = await fetch(`${OLLAMA_URL}/api/tags`);
+    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(2500) });
+    if (!res.ok) return [];
     const body = await res.json();
-    return (body.models ?? []).some((m) => m.name === name || m.name === `${name}:latest`);
+    return (body.models ?? []).map((m) => m.name).filter(Boolean);
   } catch {
-    return false;
+    return [];
   }
+}
+
+/* `name` matches a pulled tag either bare ("qwen2.5:3b") or Ollama's own
+   ":latest"-suffixed form. */
+function modelsInclude(models, name) {
+  return models.includes(name) || models.includes(`${name}:latest`);
+}
+
+async function hasModel(name) {
+  return modelsInclude(await listModels(), name);
 }
 
 /* Pull a model, forwarding Ollama's streamed progress lines to onProgress as
@@ -302,15 +317,24 @@ export async function ensureServingIfProvisioned(binDir, appOrigin) {
 }
 
 /* Report current provisioning state without changing anything — lets the UI
-   decide whether to show a "set up local AI" flow. */
-export async function status(binDir) {
+   decide whether to show a "set up local AI" flow.
+   `chatModel`/`embedModel` are the models the CALLER actually wants (normally
+   the user's previously-chosen or already-pulled model from prefs), not
+   necessarily our shipped defaults — checking against the hardcoded default
+   here is what used to make the app re-demand a download every launch for
+   anyone using a different (or bigger) model. `models` is every tag Ollama
+   already has, so the UI can offer a picker over real, already-downloaded
+   models instead of only ever knowing about one. */
+export async function status(binDir, chatModel = DEFAULT_CHAT_MODEL, embedModel = DEFAULT_EMBED_MODEL) {
   const bin = await findBinary(binDir);
   const serving = await isServing();
+  const models = serving ? await listModels() : [];
   return {
     installed: !!bin,
     serving,
-    hasChatModel: serving ? await hasModel(DEFAULT_CHAT_MODEL) : false,
-    hasEmbedModel: serving ? await hasModel(DEFAULT_EMBED_MODEL) : false,
+    hasChatModel: modelsInclude(models, chatModel),
+    hasEmbedModel: modelsInclude(models, embedModel),
+    models,
   };
 }
 

@@ -108,8 +108,10 @@ export class LocalEngine implements Engine {
   }
 
   async transcribe(_audio: Blob, _signal?: AbortSignal): Promise<TranscriptResult> {
+    // whisper.cpp isn't wired up yet, and there's no setting anywhere to
+    // point NitroAI at a self-hosted Whisper server — don't suggest one.
     throw new EngineError(
-      "Local speech-to-text model not installed. Add an OpenAI key or install a local Whisper server.",
+      "Local mode can't transcribe audio yet. Add an OpenAI key in Settings — NitroAI uses OpenAI's Whisper API automatically, nothing else to connect.",
       "model_missing",
     );
   }

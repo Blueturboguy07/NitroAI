@@ -19,8 +19,17 @@ export default function Onboarding() {
   const provider = detectProvider(apiKey.trim());
   const ready = mode === "local" || (mode === "cloud" && provider !== null);
 
-  function enter(nextMode: EngineMode) {
-    savePrefs({ ...getEnginePrefs(), mode: nextMode, onboarded: true });
+  function enter(nextMode: EngineMode, chatModel?: string) {
+    const prefs = getEnginePrefs();
+    savePrefs({
+      ...prefs,
+      mode: nextMode,
+      onboarded: true,
+      // Persist which local model is actually in use, so future launches (and
+      // the "is setup already done" check below) respect it instead of only
+      // ever recognizing the hardcoded default.
+      localModel: chatModel ?? prefs.localModel,
+    });
     navigate("/", { replace: true });
   }
 
@@ -34,8 +43,11 @@ export default function Onboarding() {
     }
     // Local: provision Ollama first IF a setup server is present and not already
     // ready. On a static/dev host with no server, proceed and let the engine
-    // use a manually-running Ollama.
-    const status = await localSetupStatus();
+    // use a manually-running Ollama. Check against any model the user already
+    // chose/pulled before (not just our default) so a returning user isn't
+    // asked to download again.
+    const prefs = getEnginePrefs();
+    const status = await localSetupStatus({ chatModel: prefs.localModel || undefined });
     const alreadyReady = status?.serving && status.hasChatModel && status.hasEmbedModel;
     if (status && !alreadyReady) {
       setSetupOpen(true);
@@ -113,7 +125,8 @@ export default function Onboarding() {
 
       {setupOpen && (
         <LocalSetupModal
-          onDone={() => enter("local")}
+          models={{ chatModel: getEnginePrefs().localModel || undefined }}
+          onDone={(chatModel) => enter("local", chatModel)}
           onCancel={() => {
             setSetupOpen(false);
             setBusy(false);

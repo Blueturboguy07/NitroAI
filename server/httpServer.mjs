@@ -87,8 +87,13 @@ async function handleApi(req, res, url, opts) {
   }
 
   if (p === "/api/local/status") {
+    // Optional overrides so status reflects the model the CALLER actually
+    // wants (e.g. one they picked or already pulled before), not just our
+    // shipped default — see server/ollama.mjs status() for why that matters.
+    const chatModel = url.searchParams.get("chatModel") || undefined;
+    const embedModel = url.searchParams.get("embedModel") || undefined;
     try {
-      return sendJson(res, 200, await status(opts.binDir));
+      return sendJson(res, 200, await status(opts.binDir, chatModel, embedModel));
     } catch (err) {
       return sendJson(res, 500, { error: err instanceof Error ? err.message : "status failed" });
     }
@@ -96,7 +101,11 @@ async function handleApi(req, res, url, opts) {
 
   if (p === "/api/local/setup") {
     // Server-Sent Events: provisions Ollama and streams progress. Called ONLY
-    // when the user has chosen the local engine.
+    // when the user has chosen the local engine. chatModel/embedModel let the
+    // caller pull a specific model (from a picker, or a previously-chosen one)
+    // instead of always the hardcoded default.
+    const chatModel = url.searchParams.get("chatModel") || undefined;
+    const embedModel = url.searchParams.get("embedModel") || undefined;
     res.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-store",
@@ -107,6 +116,7 @@ async function handleApi(req, res, url, opts) {
       const result = await provision({
         binDir: opts.binDir,
         appOrigin: opts.appOrigin,
+        models: chatModel || embedModel ? { chat: chatModel, embed: embedModel } : undefined,
         emit,
       });
       emit({ phase: "done", ...result });
