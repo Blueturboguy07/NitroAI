@@ -5,6 +5,7 @@ import {
   FileAudio,
   FilePlus2,
   FileText,
+  Folder as FolderIcon,
   FolderPlus,
   Link2,
   Loader2,
@@ -12,6 +13,7 @@ import {
   Play,
   Search,
   Trash2,
+  X,
 } from "lucide-react";
 import CreateNoteModal, { type NoteSource } from "../components/CreateNoteModal";
 import { useApp } from "../lib/app";
@@ -19,7 +21,7 @@ import type { IngestInput } from "../lib/ingest";
 import { createNoteFromSources } from "../lib/generation/pipeline";
 import { exportMarkdown, downloadText } from "../lib/export";
 import { uuid, now } from "../lib/ids";
-import type { Job, Note, SourceKind } from "../lib/types";
+import type { Folder, Job, Note, SourceKind } from "../lib/types";
 
 const creationCards: {
   source: NoteSource | "blank";
@@ -61,6 +63,9 @@ export default function Dashboard() {
   const [tab, setTab] = useState<"mine" | "shared">("mine");
   const [modal, setModal] = useState<NoteSource | null>(null);
   const [notes, setNotes] = useState<Note[]>([]);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [activeFolder, setActiveFolder] = useState<string | null>(null); // null = All notes
+  const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [job, setJob] = useState<Job | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -68,7 +73,31 @@ export default function Dashboard() {
 
   useEffect(() => {
     repo?.listNotes().then(setNotes);
+    repo?.listFolders().then(setFolders);
   }, [repo, version]);
+
+  async function createFolder(name: string) {
+    if (!repo) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const folder: Folder = { id: uuid(), name: trimmed, createdAt: now() };
+    await repo.putFolder(folder);
+    bump();
+    setFolderModalOpen(false);
+  }
+
+  async function removeFolder(id: string) {
+    if (!repo) return;
+    await repo.deleteFolder(id);
+    if (activeFolder === id) setActiveFolder(null);
+    bump();
+  }
+
+  async function moveNote(note: Note, folderId: string | undefined) {
+    if (!repo) return;
+    await repo.putNote({ ...note, folderId, updatedAt: now() });
+    bump();
+  }
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -125,8 +154,10 @@ export default function Dashboard() {
     }
   }
 
-  const filtered = notes.filter((n) =>
-    n.title.toLowerCase().includes(query.toLowerCase()),
+  const filtered = notes.filter(
+    (n) =>
+      n.title.toLowerCase().includes(query.toLowerCase()) &&
+      (activeFolder === null || n.folderId === activeFolder),
   );
   const today = filtered.filter((n) => Date.now() - n.lastOpenedAt < 86400000);
   const earlier = filtered.filter((n) => Date.now() - n.lastOpenedAt >= 86400000);
@@ -194,11 +225,51 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
-        <button className="flex items-center gap-2 rounded-xl border border-edge bg-card px-4 py-2 text-sm font-semibold shadow-soft hover:bg-card-hover">
+        <button
+          onClick={() => setFolderModalOpen(true)}
+          className="flex items-center gap-2 rounded-xl border border-edge bg-card px-4 py-2 text-sm font-semibold shadow-soft hover:bg-card-hover"
+        >
           <FolderPlus className="size-4" />
           New Folder
         </button>
       </div>
+
+      {folders.length > 0 && (
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setActiveFolder(null)}
+            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+              activeFolder === null
+                ? "bg-accent text-white"
+                : "bg-panel text-ink-faint hover:text-ink"
+            }`}
+          >
+            All notes
+          </button>
+          {folders.map((f) => (
+            <span key={f.id} className="group/chip relative inline-flex">
+              <button
+                onClick={() => setActiveFolder(f.id)}
+                className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+                  activeFolder === f.id
+                    ? "bg-accent text-white"
+                    : "bg-panel text-ink-faint hover:text-ink"
+                }`}
+              >
+                <FolderIcon className="size-3" />
+                {f.name}
+              </button>
+              <button
+                onClick={() => removeFolder(f.id)}
+                aria-label={`Delete folder ${f.name}`}
+                className="absolute -right-1.5 -top-1.5 hidden size-4 items-center justify-center rounded-full bg-danger-soft text-danger-ink group-hover/chip:flex"
+              >
+                <X className="size-2.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
 
       {tab === "shared" ? (
         <Empty
@@ -207,20 +278,38 @@ export default function Dashboard() {
         />
       ) : filtered.length === 0 ? (
         <Empty
-          title={query ? "No matching notes" : "No notes yet"}
+          title={query ? "No matching notes" : activeFolder ? "No notes in this folder" : "No notes yet"}
           sub={
             query
               ? "Try a different search."
-              : "Create your first note from a recording, document, or link above."
+              : activeFolder
+                ? "Move a note here from its ⋯ menu."
+                : "Create your first note from a recording, document, or link above."
           }
         />
       ) : (
         <div className="mt-6 space-y-6">
           {today.length > 0 && (
-            <Group label="Today" notes={today} repo={repo} bump={bump} navigate={navigate} />
+            <Group
+              label="Today"
+              notes={today}
+              folders={folders}
+              repo={repo}
+              bump={bump}
+              navigate={navigate}
+              onMove={moveNote}
+            />
           )}
           {earlier.length > 0 && (
-            <Group label="Earlier" notes={earlier} repo={repo} bump={bump} navigate={navigate} />
+            <Group
+              label="Earlier"
+              notes={earlier}
+              folders={folders}
+              repo={repo}
+              bump={bump}
+              navigate={navigate}
+              onMove={moveNote}
+            />
           )}
         </div>
       )}
@@ -234,6 +323,9 @@ export default function Dashboard() {
         />
       )}
       {job && <JobOverlay job={job} />}
+      {folderModalOpen && (
+        <NewFolderModal onCreate={createFolder} onClose={() => setFolderModalOpen(false)} />
+      )}
     </div>
   );
 }
@@ -241,15 +333,19 @@ export default function Dashboard() {
 function Group({
   label,
   notes,
+  folders,
   repo,
   bump,
   navigate,
+  onMove,
 }: {
   label: string;
   notes: Note[];
+  folders: Folder[];
   repo: ReturnType<typeof useApp>["repo"];
   bump: () => void;
   navigate: ReturnType<typeof useNavigate>;
+  onMove: (note: Note, folderId: string | undefined) => void;
 }) {
   return (
     <div>
@@ -271,6 +367,8 @@ function Group({
                 <p className="text-sm text-ink-faint">Last opened {relTime(n.lastOpenedAt)}</p>
               </div>
               <RowMenu
+                note={n}
+                folders={folders}
                 onExport={() =>
                   downloadText(`${n.title}.md`, exportMarkdown(n), "text/markdown")
                 }
@@ -278,6 +376,7 @@ function Group({
                   await repo?.deleteNote(n.id);
                   bump();
                 }}
+                onMove={(folderId) => onMove(n, folderId)}
               />
             </div>
           );
@@ -287,7 +386,19 @@ function Group({
   );
 }
 
-function RowMenu({ onExport, onDelete }: { onExport: () => void; onDelete: () => void }) {
+function RowMenu({
+  note,
+  folders,
+  onExport,
+  onDelete,
+  onMove,
+}: {
+  note: Note;
+  folders: Folder[];
+  onExport: () => void;
+  onDelete: () => void;
+  onMove: (folderId: string | undefined) => void;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div className="relative" onClick={(e) => e.stopPropagation()}>
@@ -301,7 +412,7 @@ function RowMenu({ onExport, onDelete }: { onExport: () => void; onDelete: () =>
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-20 mt-1 w-40 rounded-xl border border-edge bg-card p-1 shadow-modal">
+          <div className="absolute right-0 z-20 mt-1 w-48 rounded-xl border border-edge bg-card p-1 shadow-modal">
             <button
               onClick={() => {
                 onExport();
@@ -311,6 +422,41 @@ function RowMenu({ onExport, onDelete }: { onExport: () => void; onDelete: () =>
             >
               Export Markdown
             </button>
+            {folders.length > 0 && (
+              <>
+                <div className="my-1 border-t border-edge" />
+                <p className="px-3 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
+                  Move to folder
+                </p>
+                {folders.map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => {
+                      onMove(f.id);
+                      setOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-card-hover ${
+                      note.folderId === f.id ? "font-semibold text-accent" : ""
+                    }`}
+                  >
+                    <FolderIcon className="size-3.5" />
+                    <span className="truncate">{f.name}</span>
+                  </button>
+                ))}
+                {note.folderId && (
+                  <button
+                    onClick={() => {
+                      onMove(undefined);
+                      setOpen(false);
+                    }}
+                    className="w-full rounded-lg px-3 py-2 text-left text-sm text-ink-faint hover:bg-card-hover"
+                  >
+                    Remove from folder
+                  </button>
+                )}
+              </>
+            )}
+            <div className="my-1 border-t border-edge" />
             <button
               onClick={() => {
                 onDelete();
@@ -323,6 +469,57 @@ function RowMenu({ onExport, onDelete }: { onExport: () => void; onDelete: () =>
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function NewFolderModal({
+  onCreate,
+  onClose,
+}: {
+  onCreate: (name: string) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState("");
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+      onClick={onClose}
+    >
+      <div
+        className="w-[400px] max-w-[90vw] rounded-modal bg-card p-6 shadow-modal"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between">
+          <h2 className="font-display text-lg font-bold">New folder</h2>
+          <button
+            onClick={onClose}
+            className="rounded-lg p-1 text-ink-faint hover:bg-card-hover hover:text-ink"
+            aria-label="Close"
+          >
+            <X className="size-5" />
+          </button>
+        </div>
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && onCreate(name)}
+          placeholder="Folder name"
+          className="mt-4 w-full rounded-xl border border-edge bg-panel px-4 py-3 text-sm outline-none placeholder:text-ink-faint focus:border-accent"
+        />
+        <button
+          onClick={() => onCreate(name)}
+          disabled={!name.trim()}
+          className={`mt-4 w-full rounded-xl py-3 font-display font-bold transition ${
+            name.trim()
+              ? "bg-accent text-white hover:bg-accent-hover"
+              : "cursor-not-allowed bg-accent-softer text-ink-faint"
+          }`}
+        >
+          Create folder
+        </button>
+      </div>
     </div>
   );
 }
