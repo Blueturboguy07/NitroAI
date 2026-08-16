@@ -1,6 +1,7 @@
 name: Build desktop installers
 
-# Produces the downloadable Mac (.dmg) and Windows (.exe) installers.
+# Produces the downloadable Mac (.dmg), Windows (.exe), and Linux (.AppImage)
+# installers.
 # Trigger by pushing a version tag (e.g. `git tag v0.1.0 && git push --tags`),
 # or run manually from the Actions tab. Artifacts are attached to a GitHub
 # Release so the README's download links resolve to real files.
@@ -24,6 +25,8 @@ jobs:
             script: dist:mac
           - os: windows-latest
             script: dist:win
+          - os: ubuntu-latest
+            script: dist:linux
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -96,6 +99,7 @@ jobs:
           path: |
             release/*.dmg
             release/*.exe
+            release/*.AppImage
           if-no-files-found: warn
 
   release:
