@@ -54,7 +54,13 @@ export async function createNoteFromSources(
   const emit = async (patch: Partial<Job>) => {
     Object.assign(job, patch, { updatedAt: now() });
     await repo.putJob(job);
-    onProgress?.(job);
+    /* A COPY, not `job` itself. The UI's onProgress is a React setState, and
+       React bails out of a re-render when the next state is the same object
+       reference — so mutating one job object in place meant every message
+       after the first was silently dropped. Invisible while steps were fast;
+       with on-device transcription it left a minutes-long "Processing…" that
+       looked hung. */
+    onProgress?.({ ...job, files: job.files?.map((f) => ({ ...f })) });
   };
   await emit({});
 
@@ -82,7 +88,24 @@ export async function createNoteFromSources(
         }
         file.status = "running";
         await emit({ stage: "transcribe", message: `Transcribing ${file.name}…` });
-        const tr = await engine.transcribe(res.audio, opts.signal);
+        /* On-device transcription runs for minutes on a long recording, so
+           forward its progress instead of leaving one frozen message on screen.
+           Throttled because every emit writes the job to IndexedDB. */
+        let lastEmit = 0;
+        const tr = await engine.transcribe(res.audio, opts.signal, (p) => {
+          const at = Date.now();
+          if (at - lastEmit < 500) return;
+          lastEmit = at;
+          const within = typeof p.percent === "number" ? p.percent / 100 : 0;
+          void emit({
+            stage: "transcribe",
+            message:
+              typeof p.percent === "number"
+                ? `${p.message} ${p.percent}% (${file.name})`
+                : `${p.message} (${file.name})`,
+            progress: (i + 0.2 + 0.7 * within) / (inputs.length + 1),
+          });
+        });
         text = tr.text;
       }
       if (!text.trim() && inputs[i].kind !== "blank") {

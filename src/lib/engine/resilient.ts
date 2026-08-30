@@ -9,6 +9,7 @@ import type {
   CompletionOptions,
   StructuredOptions,
   TokenHandler,
+  TranscribeProgress,
   TranscriptResult,
   TtsOptions,
 } from "./types";
@@ -58,8 +59,12 @@ export function resilient(engine: Engine): Engine {
       withBackoff(() => engine.complete(opts, onToken), opts.signal),
     structured: <T>(opts: StructuredOptions<T>) =>
       withBackoff(() => engine.structured(opts), opts.signal),
-    transcribe: (audio: Blob, signal?: AbortSignal): Promise<TranscriptResult> =>
-      withBackoff(() => engine.transcribe(audio, signal), signal),
+    transcribe: (
+      audio: Blob,
+      signal?: AbortSignal,
+      onProgress?: (p: TranscribeProgress) => void,
+    ): Promise<TranscriptResult> =>
+      withBackoff(() => engine.transcribe(audio, signal, onProgress), signal),
     tts: (text: string, opts: TtsOptions) =>
       withBackoff(() => engine.tts(text, opts), opts.signal),
     embed: (texts: string[], signal?: AbortSignal) =>

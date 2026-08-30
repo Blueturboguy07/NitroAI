@@ -9,7 +9,7 @@ import type {
 } from "../engine/types";
 import { Repo } from "../db";
 import { memoryStore } from "../db/memory";
-import type { Note } from "../types";
+import type { Job, Note } from "../types";
 import { uuid, now } from "../ids";
 import {
   generateFlashcards,
@@ -71,7 +71,12 @@ class FakeEngine implements Engine {
     };
     return byName[opts.schemaName] as T;
   }
-  async transcribe(): Promise<TranscriptResult> {
+  async transcribe(
+    _audio: Blob,
+    _signal?: AbortSignal,
+    onProgress?: (p: { message: string; percent?: number }) => void,
+  ): Promise<TranscriptResult> {
+    onProgress?.({ message: "Transcribing audio…", percent: 50 });
     return { text: "spoken lecture transcript", segments: [] };
   }
   async tts(): Promise<Blob> {
@@ -164,6 +169,29 @@ describe("createNoteFromSources pipeline", () => {
     });
     const note = await repo.getNote(id);
     expect(note!.sourceText).toContain("transcript");
+  });
+
+  /* On-device transcription runs for minutes, so its progress has to actually
+     reach the UI. Two things had to be true and neither was: the engine's
+     progress has to be forwarded to onProgress, and each emit has to be a new
+     object — React's setState bails out on an unchanged reference, which
+     silently froze the overlay on its first message. */
+  it("reports transcription progress as distinct job objects", async () => {
+    const repo = new Repo(memoryStore());
+    const engine = new FakeEngine();
+    const seen: Job[] = [];
+    await createNoteFromSources({
+      repo,
+      engine,
+      inputs: [{ kind: "audio", file: new Blob(["x"]), filename: "lecture.mp3" }],
+      onProgress: (j) => seen.push(j),
+    });
+
+    expect(seen.some((j) => j.stage === "transcribe" && /50%/.test(j.message ?? ""))).toBe(true);
+    // No two emits may be the same object, or the UI stops updating.
+    expect(new Set(seen).size).toBe(seen.length);
+    // ...and the messages must actually differ over the run.
+    expect(new Set(seen.map((j) => j.message)).size).toBeGreaterThan(1);
   });
 
   it("records per-file status and still succeeds when one source fails", async () => {

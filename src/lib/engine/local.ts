@@ -2,9 +2,10 @@
    (https://ollama.com) running on the user's machine. No API key, no
    network egress — this is the fully-offline path.
 
-   Speech-to-text and text-to-speech have no local backend wired up yet
-   (whisper.cpp / Kokoro are future work), so those throw a "model_missing"
-   EngineError with actionable guidance instead of silently failing. */
+   Speech-to-text runs here too: Whisper, on-device, in a worker (see
+   ../whisper). Text-to-speech still has no local backend (Kokoro is future
+   work), so that one throws a "model_missing" EngineError with actionable
+   guidance instead of silently failing. */
 
 import type {
   ChatMessage,
@@ -13,6 +14,7 @@ import type {
   EngineCapabilities,
   StructuredOptions,
   TokenHandler,
+  TranscribeProgress,
   TranscriptResult,
   TtsOptions,
 } from "./types";
@@ -30,14 +32,16 @@ export class LocalEngine implements Engine {
 
   private readonly baseUrl: string;
   private readonly model: string;
+  private readonly whisperModel: string | undefined;
 
-  constructor(baseUrl?: string, model?: string) {
+  constructor(baseUrl?: string, model?: string, whisperModel?: string) {
     this.baseUrl = (baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
     this.model = model ?? DEFAULT_MODEL;
+    this.whisperModel = whisperModel;
   }
 
   capabilities(): EngineCapabilities {
-    return { chat: true, transcription: false, tts: false, embeddings: true };
+    return { chat: true, transcription: true, tts: false, embeddings: true };
   }
 
   async complete(opts: CompletionOptions, onToken?: TokenHandler): Promise<string> {
@@ -107,13 +111,15 @@ export class LocalEngine implements Engine {
     return JSON.parse(content) as T;
   }
 
-  async transcribe(_audio: Blob, _signal?: AbortSignal): Promise<TranscriptResult> {
-    // whisper.cpp isn't wired up yet, and there's no setting anywhere to
-    // point NitroAI at a self-hosted Whisper server — don't suggest one.
-    throw new EngineError(
-      "Local mode can't transcribe audio yet. Add an OpenAI key in Settings — NitroAI uses OpenAI's Whisper API automatically, nothing else to connect.",
-      "model_missing",
-    );
+  async transcribe(
+    audio: Blob,
+    signal?: AbortSignal,
+    onProgress?: (p: TranscribeProgress) => void,
+  ): Promise<TranscriptResult> {
+    /* Imported lazily: Whisper pulls in the ONNX runtime, and a user who only
+       ever writes notes from PDFs should never pay to load it. */
+    const { transcribeLocally } = await import("../whisper");
+    return transcribeLocally(audio, { model: this.whisperModel, signal, onProgress });
   }
 
   async tts(_text: string, _opts: TtsOptions): Promise<Blob> {

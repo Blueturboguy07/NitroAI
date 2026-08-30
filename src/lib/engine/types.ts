@@ -1,5 +1,5 @@
 /* Engine abstraction. CloudEngine (OpenAI/Anthropic) and LocalEngine (Ollama /
-   whisper.cpp / Kokoro) both implement this identical interface, so generation
+   Whisper / Kokoro) both implement this identical interface, so generation
    and UI code never branch on which one is active. */
 
 import type { Provider } from "../types";
@@ -41,6 +41,14 @@ export interface TranscriptResult {
   language?: string;
 }
 
+/* Progress from a long-running transcription. Local speech-to-text takes
+   minutes on a lecture recording, so the UI has to be able to show where it's
+   up to; cloud engines return in one round trip and simply don't report. */
+export interface TranscribeProgress {
+  message: string;
+  percent?: number;
+}
+
 export interface TtsOptions {
   voice: string;
   /* Provider-agnostic; local Kokoro maps these to its voice ids. */
@@ -67,7 +75,11 @@ export interface Engine {
   structured<T>(opts: StructuredOptions<T>): Promise<T>;
 
   /* Speech-to-text. Blob is audio/video. */
-  transcribe(audio: Blob, signal?: AbortSignal): Promise<TranscriptResult>;
+  transcribe(
+    audio: Blob,
+    signal?: AbortSignal,
+    onProgress?: (p: TranscribeProgress) => void,
+  ): Promise<TranscriptResult>;
 
   /* Text-to-speech. Returns audio bytes. */
   tts(text: string, opts: TtsOptions): Promise<Blob>;

@@ -3,7 +3,7 @@ import { FileAudio, FileText, Info, Link2, Upload, X } from "lucide-react";
 import type { IngestInput } from "../lib/ingest";
 import { isYoutube } from "../lib/ingest/youtube";
 import type { Engine } from "../lib/engine/types";
-import { supportsTask } from "../lib/engine/router";
+import { supportsTask, unsupportedMessage } from "../lib/engine/router";
 import type { SourceKind } from "../lib/types";
 
 export type NoteSource = "link" | "document" | "audio";
@@ -30,9 +30,10 @@ export default function CreateNoteModal({
 }: {
   source: NoteSource;
   busy?: boolean;
-  /* Used only to show an upfront "add a cloud key" hint for audio when the
-     active engine can't transcribe (local mode has no speech-to-text yet) —
-     surfacing that before the upload, not just as a failure afterward. */
+  /* Used only to warn upfront when the active engine can't transcribe (today:
+     an Anthropic key — local mode runs Whisper on-device and cloud OpenAI has
+     the API) — surfacing that before the upload, not just as a failure
+     afterward. */
   engine?: Engine | null;
   onGenerate: (inputs: IngestInput[]) => void;
   onClose: () => void;
@@ -108,11 +109,7 @@ export default function CreateNoteModal({
             {!canTranscribe && (
               <div className="mb-3 flex items-start gap-2 rounded-xl border border-edge bg-panel px-3.5 py-3 text-xs text-ink-dim">
                 <Info className="mt-0.5 size-3.5 shrink-0 text-accent" />
-                <span>
-                  Local mode can't transcribe audio yet — there's no separate
-                  "Whisper" setting to connect. Add an OpenAI key in Settings and
-                  NitroAI uses OpenAI's Whisper API automatically for this.
-                </span>
+                <span>{unsupportedMessage("transcription")}</span>
               </div>
             )}
             <Dropzone

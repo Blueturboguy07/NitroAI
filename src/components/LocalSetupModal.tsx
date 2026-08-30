@@ -42,6 +42,9 @@ export default function LocalSetupModal({
         case "starting":
           return "Starting the local AI runtime…";
         case "pulling":
+          /* Setup pulls the chat model AND the on-device speech model; naming
+             the latter "model whisper-base" would mean nothing to a user. */
+          if (e.model?.startsWith("whisper")) return "Downloading the speech model…";
           return e.model ? `Downloading model ${e.model}…` : "Downloading models…";
         case "ready":
         case "done":

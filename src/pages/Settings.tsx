@@ -17,7 +17,12 @@ import {
   saveApiKey,
 } from "../lib/engine/keys";
 import { createEngine } from "../lib/engine";
-import { localSetupStatus } from "../lib/localSetup";
+import { localSetupStatus, type WhisperStatus } from "../lib/localSetup";
+import {
+  DEFAULT_WHISPER_MODEL,
+  installWhisper,
+  WHISPER_MODEL_CHOICES,
+} from "../lib/whisper";
 import LocalSetupModal from "../components/LocalSetupModal";
 import { exportMarkdown, downloadText } from "../lib/export";
 import type { EngineMode } from "../lib/types";
@@ -57,17 +62,52 @@ export default function Settings() {
   const [localModels, setLocalModels] = useState<string[]>([]);
   /* Set while a picker choice needs a download before it can become active. */
   const [pendingModel, setPendingModel] = useState<string | null>(null);
+  /* Speech-to-text is a separate install from the chat model — this is what
+     tells the user whether audio uploads will work offline. */
+  const [whisper, setWhisper] = useState<WhisperStatus | null>(null);
+  const [whisperMsg, setWhisperMsg] = useState("");
+  const [whisperBusy, setWhisperBusy] = useState(false);
   const provider = detectProvider(key.trim());
   const activeModel = prefs.localModel || DEFAULT_CHAT_MODEL;
+  const activeWhisper = prefs.whisperModel || DEFAULT_WHISPER_MODEL;
 
   useEffect(() => {
     loadApiKey().then(setKey);
   }, []);
 
   function refreshLocalModels() {
-    void localSetupStatus({ chatModel: prefs.localModel || undefined }).then((s) => {
-      if (s) setLocalModels(s.models);
+    void localSetupStatus({
+      chatModel: prefs.localModel || undefined,
+      whisperModel: activeWhisper,
+    }).then((s) => {
+      if (!s) return;
+      setLocalModels(s.models);
+      setWhisper(s.whisper ?? null);
     });
+  }
+
+  /* Download the speech model (or a different size of it) now, rather than
+     leaving the user to discover it missing when they upload a lecture. */
+  async function chooseWhisper(id: string) {
+    if (whisperBusy) return;
+    savePrefs({ ...prefs, whisperModel: id });
+    setWhisperBusy(true);
+    setWhisperMsg("Downloading the speech model…");
+    try {
+      await installWhisper(id, (p) =>
+        setWhisperMsg(
+          typeof p.percent === "number"
+            ? `Downloading the speech model… ${p.percent}%`
+            : p.message,
+        ),
+      );
+      setWhisper({ model: id, installed: true, bytes: 0 });
+      setWhisperMsg("Speech model ready — audio uploads work offline.");
+    } catch (err) {
+      setWhisperMsg(err instanceof Error ? err.message : "Couldn't download the speech model.");
+    } finally {
+      setWhisperBusy(false);
+    }
   }
 
   // Show already-pulled models as soon as the page loads if local mode is
@@ -293,9 +333,46 @@ export default function Settings() {
                 </label>
                 <p className="mt-2 text-xs text-ink-faint">
                   Currently using <span className="font-semibold text-ink">{activeModel}</span>.
-                  Speech-to-text (Whisper) and podcast voices (Kokoro) aren't wired up
-                  locally yet — those need a cloud key.
+                  Podcast voices (Kokoro) aren't wired up locally yet — those need a
+                  cloud key.
                 </p>
+
+                <label className="mt-4 block border-t border-edge pt-4">
+                  <span className="text-xs font-semibold text-ink-faint">
+                    Speech-to-text model (audio &amp; video uploads)
+                  </span>
+                  <select
+                    value={activeWhisper}
+                    onChange={(e) => void chooseWhisper(e.target.value)}
+                    disabled={whisperBusy}
+                    className="mt-1.5 w-full rounded-xl border border-edge bg-card px-3 py-2.5 text-sm outline-none focus:border-accent disabled:opacity-60"
+                  >
+                    {WHISPER_MODEL_CHOICES.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label} — {m.note}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="mt-2 text-xs text-ink-faint">
+                  Whisper runs on this device, so lecture recordings are transcribed
+                  without a key and without leaving your machine.
+                </p>
+                {whisperMsg ? (
+                  <p className="mt-2 text-xs font-semibold text-ink">{whisperMsg}</p>
+                ) : whisper?.installed ? (
+                  <p className="mt-2 text-xs font-semibold text-ink-dim">
+                    Installed — audio uploads work offline.
+                  </p>
+                ) : (
+                  <button
+                    onClick={() => void chooseWhisper(activeWhisper)}
+                    disabled={whisperBusy}
+                    className="mt-2 rounded-xl border border-edge bg-panel px-3 py-1.5 text-xs font-semibold shadow-soft hover:bg-card-hover disabled:opacity-60"
+                  >
+                    Download it now
+                  </button>
+                )}
                 {localModels.length === 0 && (
                   <p className="mt-2 text-xs font-semibold text-danger-ink">
                     Ollama isn't reachable right now — make sure it's running, then

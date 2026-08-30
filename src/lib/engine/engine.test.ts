@@ -249,14 +249,39 @@ describe("LocalEngine", () => {
     expect(url).toBe("http://localhost:11434/api/chat");
   });
 
-  it("transcribe() and tts() throw model_missing", async () => {
-    const engine = new LocalEngine();
-    await expect(engine.transcribe(new Blob(["audio"]))).rejects.toMatchObject({
+  /* Local mode used to refuse audio outright ("add an OpenAI key"). It now
+     transcribes on-device with Whisper, and this capability flag is what the
+     upload UI and the router branch on — if it regresses to false, audio
+     uploads silently go back to being blocked. */
+  it("capabilities() reports transcription, but not tts", () => {
+    expect(new LocalEngine().capabilities()).toEqual({
+      chat: true,
+      transcription: true,
+      tts: false,
+      embeddings: true,
+    });
+  });
+
+  it("tts() still throws model_missing (no local voices yet)", async () => {
+    await expect(new LocalEngine().tts("hi", { voice: "default" })).rejects.toMatchObject({
       name: "EngineError",
       kind: "model_missing",
     });
-    await expect(engine.tts("hi", { voice: "default" })).rejects.toMatchObject({
-      kind: "model_missing",
+  });
+
+  /* Whisper needs Web Audio to turn a file into samples, which this (node)
+     environment doesn't have. The point of the assertion is the wrapping: any
+     transcription failure has to surface as an EngineError with a message the
+     UI can show, never a raw DOMException. */
+  it("transcribe() surfaces failures as an EngineError, not a raw throw", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+    await expect(new LocalEngine().transcribe(new Blob(["audio"]))).rejects.toMatchObject({
+      name: "EngineError",
     });
   });
 

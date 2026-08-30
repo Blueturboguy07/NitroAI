@@ -110,7 +110,7 @@ export class AnthropicEngine implements Engine {
     return block.input as T;
   }
 
-  async transcribe(_audio: Blob, _signal?: AbortSignal): Promise<TranscriptResult> {
+  async transcribe(_audio: Blob, _signal?: AbortSignal, _onProgress?: unknown): Promise<TranscriptResult> {
     throw new EngineError(UNSUPPORTED_MESSAGE, "unsupported");
   }
 

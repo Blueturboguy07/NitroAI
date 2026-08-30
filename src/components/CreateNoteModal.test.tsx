@@ -1,20 +1,27 @@
 // @vitest-environment jsdom
-/* "how tf do i connect whisper ai to nitro" — there is no separate Whisper
-   setting to connect; local mode simply can't transcribe yet, and the only
-   real path is adding a cloud key. This used to be discoverable only as a
-   failure message AFTER attempting an upload. These tests pin the upfront
-   in-app hint added to the audio upload step. */
+/* "how tf do i connect whisper ai to nitro" — the answer used to be "you
+   can't": local mode had no speech-to-text at all, and the audio step told
+   every local user to go get a cloud key. Local mode now runs Whisper on the
+   device, so the only engine that still can't transcribe is Anthropic.
+
+   These tests pin both halves: the warning appears for an engine that genuinely
+   can't transcribe, and — the regression that matters — it does NOT appear for
+   local mode, which would otherwise send users off to buy a key they don't
+   need. */
 import { afterEach, describe, expect, it } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import CreateNoteModal from "./CreateNoteModal";
+import { unsupportedMessage } from "../lib/engine/router";
 import type { Engine } from "../lib/engine/types";
 
 afterEach(cleanup);
 
-function fakeEngine(transcription: boolean): Engine {
+const WARNING = unsupportedMessage("transcription");
+
+function fakeEngine(transcription: boolean, mode: "local" | "cloud" = "cloud"): Engine {
   return {
-    mode: "local",
+    mode,
     capabilities: () => ({ chat: true, transcription, tts: false, embeddings: true }),
     complete: async () => "",
     structured: async () => ({}) as never,
@@ -25,8 +32,8 @@ function fakeEngine(transcription: boolean): Engine {
   };
 }
 
-describe("CreateNoteModal — audio source Whisper hint", () => {
-  it("shows a hint when the active engine can't transcribe (local mode)", () => {
+describe("CreateNoteModal — audio source transcription warning", () => {
+  it("warns when the active engine can't transcribe (e.g. an Anthropic key)", () => {
     render(
       <CreateNoteModal
         source="audio"
@@ -35,30 +42,29 @@ describe("CreateNoteModal — audio source Whisper hint", () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.getByText(/Local mode can't transcribe audio yet/)).toBeInTheDocument();
-    expect(screen.getByText(/Add an OpenAI key in Settings/)).toBeInTheDocument();
+    expect(screen.getByText(WARNING)).toBeInTheDocument();
   });
 
-  it("hides the hint when the active engine can transcribe (cloud mode)", () => {
+  it("does not warn in local mode — Whisper runs on the device", () => {
     render(
       <CreateNoteModal
         source="audio"
-        engine={fakeEngine(true)}
+        engine={fakeEngine(true, "local")}
         onGenerate={() => {}}
         onClose={() => {}}
       />,
     );
-    expect(screen.queryByText(/Local mode can't transcribe audio yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText(WARNING)).not.toBeInTheDocument();
   });
 
-  it("hides the hint when no engine is configured yet (nothing to warn about)", () => {
+  it("does not warn when no engine is configured yet (nothing to warn about)", () => {
     render(
       <CreateNoteModal source="audio" engine={null} onGenerate={() => {}} onClose={() => {}} />,
     );
-    expect(screen.queryByText(/Local mode can't transcribe audio yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText(WARNING)).not.toBeInTheDocument();
   });
 
-  it("never shows the audio hint for a non-audio source", () => {
+  it("never shows the audio warning for a non-audio source", () => {
     render(
       <CreateNoteModal
         source="document"
@@ -67,6 +73,15 @@ describe("CreateNoteModal — audio source Whisper hint", () => {
         onClose={() => {}}
       />,
     );
-    expect(screen.queryByText(/Local mode can't transcribe audio yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText(WARNING)).not.toBeInTheDocument();
+  });
+});
+
+/* The message itself must not send a local user to a cloud key — that was the
+   original bug's copy, and it is now wrong as well as unhelpful. */
+describe("unsupportedMessage('transcription')", () => {
+  it("points at local mode as a real option", () => {
+    expect(WARNING).toMatch(/local mode/i);
+    expect(WARNING).toMatch(/Whisper/);
   });
 });

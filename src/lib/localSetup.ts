@@ -1,10 +1,11 @@
 /* Client side of the "just works" local engine.
  *
  * When the user picks the local engine, the app asks the local server (the
- * desktop shell, or `npm run serve`) to provision Ollama: install it if needed,
- * start it, and pull the default models — streaming progress back. This is the
- * only place that provisioning is triggered, so cloud/BYO-key users never
- * download anything.
+ * desktop shell, or `npm run serve`) to provision it: install and start Ollama,
+ * pull the default chat/embedding models, and install the Whisper model that
+ * makes audio uploads work offline — streaming progress back. This is the only
+ * place that provisioning is triggered, so cloud/BYO-key users never download
+ * anything.
  *
  * If no provisioning server is present (a plain static deploy, or `npm run dev`
  * without the server), setup is simply unavailable and the caller proceeds —
@@ -22,6 +23,16 @@ export interface LocalSetupEvent {
      caller should persist as the user's chosen model going forward. */
   chat?: string;
   embed?: string;
+  whisper?: string;
+}
+
+/* What the server reports is installed on this machine. `whisper` is the
+   speech-to-text model — a separate install from the chat model, and the one
+   local mode used to be missing entirely, which is why audio uploads failed. */
+export interface WhisperStatus {
+  model: string;
+  installed: boolean;
+  bytes: number;
 }
 
 export interface DesiredModels {
@@ -30,12 +41,14 @@ export interface DesiredModels {
      status/setup respect it instead of only ever knowing our one default. */
   chatModel?: string;
   embedModel?: string;
+  whisperModel?: string;
 }
 
 function query(desired?: DesiredModels): string {
   const params = new URLSearchParams();
   if (desired?.chatModel) params.set("chatModel", desired.chatModel);
   if (desired?.embedModel) params.set("embedModel", desired.embedModel);
+  if (desired?.whisperModel) params.set("whisperModel", desired.whisperModel);
   const qs = params.toString();
   return qs ? `?${qs}` : "";
 }
@@ -50,6 +63,7 @@ export async function localSetupStatus(desired?: DesiredModels): Promise<{
   hasChatModel: boolean;
   hasEmbedModel: boolean;
   models: string[];
+  whisper?: WhisperStatus;
 } | null> {
   try {
     const res = await fetch(`/api/local/status${query(desired)}`, {
@@ -65,17 +79,16 @@ export async function localSetupStatus(desired?: DesiredModels): Promise<{
   }
 }
 
-/* Run provisioning, forwarding each progress event to `onEvent`. Resolves when
-   the local engine is ready; rejects on a reported error. Uses a streamed fetch
-   (not EventSource) so it works under the app's strict same-origin setup.
-   `desired` pulls a specific model (from a picker, or one already chosen in a
-   prior session) instead of always the hardcoded default. */
-export async function runLocalSetup(
+/* Read one of the server's Server-Sent Events setup streams to completion,
+   forwarding every progress event. Uses a streamed fetch (not EventSource) so
+   it works under the app's strict same-origin setup. Shared by the full local
+   setup and the speech-model-only install, which speak the same event shape. */
+async function consumeSetupStream(
+  path: string,
   onEvent: (e: LocalSetupEvent) => void,
   signal?: AbortSignal,
-  desired?: DesiredModels,
 ): Promise<void> {
-  const res = await fetch(`/api/local/setup${query(desired)}`, { signal });
+  const res = await fetch(path, { signal });
   if (!res.ok || !res.body) throw new Error(`Local setup unavailable (${res.status}).`);
 
   const reader = res.body.getReader();
@@ -108,4 +121,28 @@ export async function runLocalSetup(
     }
   }
   if (!sawTerminal) throw new Error("Local setup ended unexpectedly.");
+}
+
+/* Run provisioning, forwarding each progress event to `onEvent`. Resolves when
+   the local engine is ready; rejects on a reported error. `desired` pulls a
+   specific model (from a picker, or one already chosen in a prior session)
+   instead of always the hardcoded default. */
+export function runLocalSetup(
+  onEvent: (e: LocalSetupEvent) => void,
+  signal?: AbortSignal,
+  desired?: DesiredModels,
+): Promise<void> {
+  return consumeSetupStream(`/api/local/setup${query(desired)}`, onEvent, signal);
+}
+
+/* Install just the speech-to-text model. Separate from the full setup so that
+   changing the Whisper size in Settings — or a user who set local mode up
+   before this existed — doesn't re-run the whole Ollama provisioning flow. */
+export function runWhisperSetup(
+  onEvent: (e: LocalSetupEvent) => void,
+  signal?: AbortSignal,
+  model?: string,
+): Promise<void> {
+  const qs = model ? `?model=${encodeURIComponent(model)}` : "";
+  return consumeSetupStream(`/api/local/whisper/setup${qs}`, onEvent, signal);
 }

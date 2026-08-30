@@ -180,5 +180,7 @@ export interface EnginePrefs {
   /* Per-mode model selection; empty string = provider/engine default. */
   cloudModel?: string;
   localModel?: string;
+  /* Which on-device Whisper size local transcription uses. */
+  whisperModel?: string;
   language: string;
 }

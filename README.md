@@ -44,13 +44,13 @@ If you don't see "Run anyway," instead **right-click the downloaded `NitroAI-Set
 
 ## How it works
 
-NitroAI is a small desktop shell around a local web app. When you open it, the app **starts a tiny local server on your machine**, shows it in a window, keeps it alive, and shuts it down when you quit. That local server is what does the things a plain web page can't — extracting YouTube transcripts with `yt-dlp` and managing the local AI runtime — so **you never install those tools by hand.**
+NitroAI is a small desktop shell around a local web app. When you open it, the app **starts a tiny local server on your machine**, shows it in a window, keeps it alive, and shuts it down when you quit. That local server is what does the things a plain web page can't — extracting YouTube transcripts with `yt-dlp`, managing the local AI runtime, and installing the local speech-to-text model — so **you never install those tools by hand.**
 
 ### Two ways to run the AI
 
 You pick one on first launch (and can switch any time in Settings):
 
-- **Fully local** — when you choose this, NitroAI automatically downloads and starts a local AI runtime ([Ollama](https://ollama.com)) and pulls a small, capable model (~2 GB, one time). Everything then runs on your device: no key, no cloud, no cost. *Provisioning only ever happens if you pick local — cloud users never download a model.*
+- **Fully local** — when you choose this, NitroAI automatically downloads and starts a local AI runtime ([Ollama](https://ollama.com)) and pulls a small, capable model (~2 GB, one time), plus a Whisper speech-to-text model (~80 MB) so **audio and video uploads are transcribed on your device too**. Everything then runs on your machine: no key, no cloud, no cost. *Provisioning only ever happens if you pick local — cloud users never download a model.*
 - **Bring your own key** — paste an OpenAI (`sk-…`) or Anthropic (`sk-ant-…`) key for the highest-quality notes, quizzes, chat, and podcast voices. The key is stored in your OS keychain and used only to call your provider directly.
 
 Your notes and generated content live only on your machine (in the app's local database); you can export everything from Settings at any time.
@@ -68,6 +68,12 @@ npm run dev      # Vite dev server (hot reload) — includes the YouTube helper
 npm run serve    # build once, then serve the app + helpers at http://localhost:4180
 npm run app      # build, then launch the full desktop shell (Electron)
 ```
+
+`npm install` will warn that `onnxruntime-node` has an unrun install script.
+Leave it unapproved: it's a transitive dependency of `@huggingface/transformers`
+and its postinstall pulls ~200 MB of native binaries for a Node backend NitroAI
+never loads. Local transcription runs in the app's own window on the WebAssembly
+build, which ships inside `dist/`.
 
 Build installers locally:
 

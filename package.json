@@ -28,6 +28,7 @@
   "dependencies": {
     "@fontsource-variable/quicksand": "^5.3.0",
     "@fontsource/nunito": "^5.3.0",
+    "@huggingface/transformers": "^3.8.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "dompurify": "^3.4.12",

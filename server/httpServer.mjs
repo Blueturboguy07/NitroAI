@@ -2,8 +2,12 @@
  * native-helper endpoints the browser can't do itself:
  *   GET  /api/health               → liveness (the shell polls this)
  *   GET  /api/youtube-extract?url= → yt-dlp captions/audio
- *   GET  /api/local/status         → Ollama provisioning state
+ *   GET  /api/local/status         → Ollama + Whisper provisioning state
  *   GET  /api/local/setup          → SSE stream that installs/starts/pulls Ollama
+ *                                    and installs the local Whisper model
+ *   GET  /api/local/whisper/setup  → SSE stream that installs Whisper on its own
+ *   GET  /api/local/models/...     → the installed Whisper files, for the
+ *                                    renderer's transformers.js runtime
  *
  * Pure Node built-ins, no framework, so the packaged app stays small and has
  * no extra supply chain. Exported as startServer() so both the Electron main
@@ -16,6 +20,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractYoutube } from "./ytdlp.mjs";
 import { provision, status } from "./ollama.mjs";
+import {
+  DEFAULT_WHISPER_MODEL,
+  installWhisper,
+  resolveModelPath,
+  whisperStatus,
+} from "./whisper.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -92,11 +102,50 @@ async function handleApi(req, res, url, opts) {
     // shipped default — see server/ollama.mjs status() for why that matters.
     const chatModel = url.searchParams.get("chatModel") || undefined;
     const embedModel = url.searchParams.get("embedModel") || undefined;
+    const whisperModel = url.searchParams.get("whisperModel") || DEFAULT_WHISPER_MODEL;
     try {
-      return sendJson(res, 200, await status(opts.binDir, chatModel, embedModel));
+      const ollama = await status(opts.binDir, chatModel, embedModel);
+      // Transcription is a separate install from the chat model, and it is the
+      // one the app used to be silently missing — report it alongside so the UI
+      // never has to guess whether audio will work.
+      return sendJson(res, 200, { ...ollama, whisper: whisperStatus(opts.binDir, whisperModel) });
     } catch (err) {
       return sendJson(res, 500, { error: err instanceof Error ? err.message : "status failed" });
     }
+  }
+
+  if (p === "/api/local/whisper/setup") {
+    // Installing speech-to-text on its own (from Settings, or on demand right
+    // before the first transcription) without re-running the whole Ollama flow.
+    const model = url.searchParams.get("model") || DEFAULT_WHISPER_MODEL;
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-store",
+      connection: "keep-alive",
+    });
+    const emit = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+    try {
+      const result = await installWhisper({ binDir: opts.binDir, model, emit });
+      emit({ phase: "done", whisper: result.model });
+    } catch (err) {
+      emit({ phase: "error", message: err instanceof Error ? err.message : "speech model setup failed" });
+    }
+    return res.end();
+  }
+
+  if (p.startsWith("/api/local/models/")) {
+    // The installed model files, served to the renderer's transformers.js
+    // runtime (env.localModelPath points here). Read-only, path-guarded.
+    const file = resolveModelPath(opts.binDir, p.slice("/api/local/models/".length));
+    if (!file) return sendJson(res, 404, { error: "model file not installed" });
+    res.writeHead(200, {
+      "content-type": file.endsWith(".json") ? MIME[".json"] : "application/octet-stream",
+      "content-length": fs.statSync(file).size,
+      // Immutable on disk until the user reinstalls the model, and the renderer
+      // re-fetches ~80 MB of weights on every cold start without this.
+      "cache-control": "public, max-age=31536000, immutable",
+    });
+    return fs.createReadStream(file).pipe(res);
   }
 
   if (p === "/api/local/setup") {
@@ -106,6 +155,7 @@ async function handleApi(req, res, url, opts) {
     // instead of always the hardcoded default.
     const chatModel = url.searchParams.get("chatModel") || undefined;
     const embedModel = url.searchParams.get("embedModel") || undefined;
+    const whisperModel = url.searchParams.get("whisperModel") || DEFAULT_WHISPER_MODEL;
     res.writeHead(200, {
       "content-type": "text/event-stream",
       "cache-control": "no-store",
@@ -119,7 +169,12 @@ async function handleApi(req, res, url, opts) {
         models: chatModel || embedModel ? { chat: chatModel, embed: embedModel } : undefined,
         emit,
       });
-      emit({ phase: "done", ...result });
+      // Speech-to-text is part of setting up local mode, not a surprise
+      // download the first time someone drags in a lecture recording. It is a
+      // fraction of the chat model's size, and installing it here is what makes
+      // audio work offline out of the box.
+      const whisper = await installWhisper({ binDir: opts.binDir, model: whisperModel, emit });
+      emit({ phase: "done", ...result, whisper: whisper.model });
     } catch (err) {
       emit({ phase: "error", message: err instanceof Error ? err.message : "setup failed" });
     }

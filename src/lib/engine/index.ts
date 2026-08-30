@@ -18,11 +18,14 @@ export interface CreateEngineOptions {
   apiKey?: string;
   model?: string;
   localBaseUrl?: string;
+  /* Which on-device Whisper size local mode transcribes with. Unset = the
+     shipped default; see server/whisper.mjs. */
+  whisperModel?: string;
 }
 
 export function createEngine(opts: CreateEngineOptions): Engine {
   if (opts.mode === "local") {
-    return new LocalEngine(opts.localBaseUrl, opts.model);
+    return new LocalEngine(opts.localBaseUrl, opts.model, opts.whisperModel);
   }
 
   if (!opts.apiKey) {

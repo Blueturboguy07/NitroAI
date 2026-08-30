@@ -11,6 +11,7 @@ const defaults: EnginePrefs = {
   onboarded: false,
   cloudModel: "",
   localModel: "",
+  whisperModel: "",
   language: "English",
 };
 

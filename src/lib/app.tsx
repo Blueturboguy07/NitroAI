@@ -43,7 +43,13 @@ export async function buildEngine(
 ): Promise<Engine | null> {
   if (!prefs.mode) return null;
   if (prefs.mode === "local") {
-    return resilient(createEngine({ mode: "local", model: prefs.localModel || undefined }));
+    return resilient(
+      createEngine({
+        mode: "local",
+        model: prefs.localModel || undefined,
+        whisperModel: prefs.whisperModel || undefined,
+      }),
+    );
   }
   const key = await loadApiKey();
   const provider = detectProvider(key);
