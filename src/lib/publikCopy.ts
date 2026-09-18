@@ -1,6 +1,6 @@
 /* Every publik-facing string in one place (R21 §4 copy, contract §1 copy
    rule). Rules: the provider is always "publik API"; dollars, never tokens,
-   never "credits" as a unit; the rate is stated, never an hourly figure; the
+   never a made-up unit; the rate is stated, never an hourly figure; the
    starter amount is rendered from the server, never hardcoded. */
 
 /* Bump together with server/publik.mjs DISCLOSURE_VERSION when this changes. */

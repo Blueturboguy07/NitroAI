@@ -118,8 +118,8 @@ export default function CreateNoteModal({
                   ) : (
                     <>
                       Local mode can't transcribe audio yet — there's no separate
-                      "Whisper" setting to connect. Switch to publik API or add an
-                      OpenAI key in Settings and NitroAI transcribes automatically.
+                      "Whisper" setting to connect. Add an OpenAI key in Settings (or
+                      switch to publik API) and NitroAI transcribes automatically.
                     </>
                   )}
                 </span>
