@@ -4,6 +4,7 @@
    falls back to unsupportedMessage() for a clean, user-facing explanation
    instead of letting the raw EngineError surface. */
 
+import type { Provider } from "../types";
 import type { Engine } from "./types";
 
 export type Task = "chat" | "transcription" | "tts" | "embeddings";
@@ -22,7 +23,22 @@ export function supportsTask(engine: Engine, task: Task): boolean {
   }
 }
 
-export function unsupportedMessage(task: Task): string {
+export function unsupportedMessage(task: Task, provider?: Provider): string {
+  if (provider === "publik") {
+    // publik API carries every line the app uses (chat at 50% of list; audio,
+    // voices and embeddings at cost). A capability can still be switched off
+    // per install by the gateway, and this is what the user then reads.
+    switch (task) {
+      case "chat":
+        return "publik API isn't carrying chat for this install right now. Use your own key or Local mode in Settings.";
+      case "transcription":
+        return "publik API isn't carrying audio transcription for this install right now. Add your own OpenAI key in Settings for audio and YouTube-without-captions.";
+      case "tts":
+        return "publik API isn't carrying podcast voices for this install right now. Add your own OpenAI key in Settings for voices.";
+      case "embeddings":
+        return "publik API isn't carrying embeddings for this install right now.";
+    }
+  }
   switch (task) {
     case "chat":
       return "This engine doesn't support chat. Switch to a cloud key or a chat-capable local model.";

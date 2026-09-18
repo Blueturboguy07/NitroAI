@@ -14,11 +14,12 @@ import {
 import { Repo } from "./db";
 import { idbStore } from "./db/idb";
 import { memoryStore } from "./db/memory";
-import { createEngine } from "./engine";
+import { createEngine, PUBLIK_DEFAULT_MODELS } from "./engine";
 import type { Engine } from "./engine/types";
 import { resilient } from "./engine/resilient";
 import { detectProvider, loadApiKey } from "./engine/keys";
 import { getEnginePrefs, saveEnginePrefs } from "./prefs";
+import { fetchPublikStatus, linesToCapabilities, usageToBalance } from "./publik";
 import type { EnginePrefs } from "./types";
 import { reconcileJobs } from "./generation/pipeline";
 
@@ -37,7 +38,8 @@ export function getRepo(): Promise<Repo> {
 }
 
 /* Build the engine described by prefs. Returns null if not configured (no mode
-   picked, or cloud mode without a valid key). */
+   picked, cloud mode without a valid key, or publik mode with no credential —
+   the app then degrades to "Set up your engine in Settings", never a dialog). */
 export async function buildEngine(
   prefs: EnginePrefs = getEnginePrefs(),
 ): Promise<Engine | null> {
@@ -45,6 +47,31 @@ export async function buildEngine(
   if (prefs.mode === "local") {
     return resilient(createEngine({ mode: "local", model: prefs.localModel || undefined }));
   }
+
+  if (prefs.mode === "publik") {
+    // The credential lives in the local server; the renderer only learns
+    // whether it is ready and which aliases to use. The user's own key slot
+    // is never read on this path.
+    const s = await fetchPublikStatus();
+    if (!s.available || s.state !== "ready") return null;
+    return resilient(
+      createEngine({
+        mode: "cloud",
+        provider: "publik",
+        baseUrl: s.baseUrl,
+        models: {
+          fast: s.models?.fast ?? PUBLIK_DEFAULT_MODELS.fast,
+          strong: s.models?.balanced ?? PUBLIK_DEFAULT_MODELS.strong,
+        },
+        capabilities: linesToCapabilities(s.lines),
+        onUsage: usageToBalance,
+      }),
+    );
+  }
+
+  // "cloud" = the user's own key. Unchanged, except a pasted pk_ key now
+  // routes to publik API (through the local proxy). The publik credential is
+  // never consulted here — the user's choice wins even if a file exists.
   const key = await loadApiKey();
   const provider = detectProvider(key);
   if (!provider) return null;
@@ -54,6 +81,7 @@ export async function buildEngine(
       provider,
       apiKey: key,
       model: prefs.cloudModel || undefined,
+      ...(provider === "publik" ? { onUsage: usageToBalance } : {}),
     }),
   );
 }

@@ -4,8 +4,13 @@ import type { Provider } from "../types";
    either. Storage prefers the OS keychain via a Tauri command; in web/dev mode
    it falls back to a dedicated localStorage slot (documented as such in the UI). */
 
+/* publik API key format (contract §1): pk_(live|test)_<12>_<32>. A user can
+   paste one from their publikhq.com dashboard into the same field. */
+export const PUBLIK_KEY_FORMAT = /^pk_(live|test)_[a-z0-9]{12}_[a-z0-9]{32}$/;
+
 export function detectProvider(key: string): Provider | null {
   const k = key.trim();
+  if (PUBLIK_KEY_FORMAT.test(k)) return "publik";
   if (k.startsWith("sk-ant-")) return "anthropic";
   if (k.startsWith("sk-")) return "openai";
   return null;
