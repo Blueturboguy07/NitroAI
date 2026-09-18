@@ -75,10 +75,27 @@ jobs:
           echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
           echo "MAC_SIGN=1" >> "$GITHUB_ENV"
 
+      # publik API default: the app token is baked into the bundle by
+      # electron-builder's extraMetadata (see electron-builder.cjs). A tag
+      # build without it still succeeds but ships without the publik option,
+      # so say so loudly instead of silently producing a BYO-only release.
+      - name: Check publik app token
+        shell: bash
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if [ -z "${PUBLIK_APP_TOKEN:-}" ]; then
+            echo "::warning::PUBLIK_APP_TOKEN secret is not set — this build will not offer publik API (Local + own key only)."
+          else
+            echo "publik app token present (not printed)."
+          fi
+
       - name: Build installer
         run: npm run ${{ matrix.script }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Baked into the packaged package.json (extraMetadata.publik.appToken).
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
           # macOS signing uses the keychain set up above (CSC_KEYCHAIN/MAC_SIGN);
           # CSC_LINK is deliberately NOT passed here. Notarization reads the
           # Apple credentials. Windows Authenticode signing activates if the

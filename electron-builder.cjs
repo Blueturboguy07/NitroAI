@@ -34,7 +34,15 @@ module.exports = {
   // Publishing is handled by the release workflow, not electron-builder.
   publish: null,
   files: ["dist/**", "server/**", "electron/**", "!**/*.map"],
-  extraMetadata: { main: "electron/main.mjs" },
+  extraMetadata: {
+    main: "electron/main.mjs",
+    // Identifies this app build to publikhq.com so a fresh install can mint its
+    // own publik API key (after the user accepts the disclosure). Absent (null)
+    // in forks and local builds — the app then offers only Local and "my own
+    // key", exactly like v0.1.6. Set as the PUBLIK_APP_TOKEN repo secret; it
+    // lands in the packaged package.json, never in dist/** or the renderer.
+    publik: { appToken: process.env.PUBLIK_APP_TOKEN || null },
+  },
   // Ad-hoc signs the mac bundle when there's no real cert (no-op otherwise).
   afterPack: "./scripts/afterPack.cjs",
   directories: { output: "release", buildResources: "build-resources" },

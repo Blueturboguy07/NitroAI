@@ -23,7 +23,7 @@
 
 ---
 
-NitroAI is an open-source, local-first study app. Point it at a document, a website, a YouTube link, or an audio file and it generates clean notes (with math), spaced-repetition flashcards, quizzes, and a chat that knows your material. You can run it **fully locally** (no account, no cloud, nothing leaves your machine) or **bring your own** OpenAI / Anthropic key for top-tier quality. There is no NitroAI subscription, ever.
+NitroAI is an open-source, local-first study app. Point it at a document, a website, a YouTube link, or an audio file and it generates clean notes (with math), spaced-repetition flashcards, quizzes, and a chat that knows your material. Out of the box it runs on **publik API** — pay per use, no account or key needed to start. You can also run it **fully locally** (no account, no cloud, nothing leaves your machine) or **bring your own** OpenAI / Anthropic key. There is no NitroAI subscription: publik API is pay-per-use, your own key is billed by your provider, and local is free.
 
 > [!IMPORTANT]
 > **This is a starting point, not a finished product.** It's an open-source foundation meant to be forked, extended, and improved. It works and it's genuinely useful, but expect rough edges — treat it as a solid base to build on rather than a polished commercial app.
@@ -46,12 +46,13 @@ If you don't see "Run anyway," instead **right-click the downloaded `NitroAI-Set
 
 NitroAI is a small desktop shell around a local web app. When you open it, the app **starts a tiny local server on your machine**, shows it in a window, keeps it alive, and shuts it down when you quit. That local server is what does the things a plain web page can't — extracting YouTube transcripts with `yt-dlp` and managing the local AI runtime — so **you never install those tools by hand.**
 
-### Two ways to run the AI
+### Three ways to run the AI
 
 You pick one on first launch (and can switch any time in Settings):
 
+- **publik API** (default in the packaged builds) — NitroAI sets itself up on first launch, after you accept a short disclosure. Every request is priced per use at 50% of the model's published list price; audio transcription, podcast voices and embeddings are passed through at cost. Most people spend under $2 a month. A small free starter balance is added when you continue; link the computer to your publik account at any time to add credit or a monthly plan. Your prompts go through publik's servers to a shared model account; publik does not keep them after the reply and never trains on them. The install's key lives in `~/Library/Application Support/publik/apps/nitroai.json` (mac) / `%LOCALAPPDATA%\publik\apps\nitroai.json` (Windows), readable only by you, and never leaves the app's local server. Builds without a publik app token (forks, `npm run app` without `PUBLIK_APP_TOKEN`) simply don't offer this option.
 - **Fully local** — when you choose this, NitroAI automatically downloads and starts a local AI runtime ([Ollama](https://ollama.com)) and pulls a small, capable model (~2 GB, one time). Everything then runs on your device: no key, no cloud, no cost. *Provisioning only ever happens if you pick local — cloud users never download a model.*
-- **Bring your own key** — paste an OpenAI (`sk-…`) or Anthropic (`sk-ant-…`) key for the highest-quality notes, quizzes, chat, and podcast voices. The key is stored in your OS keychain and used only to call your provider directly.
+- **Use my own key** — paste an OpenAI (`sk-…`), Anthropic (`sk-ant-…`) or publik (`pk_…`) key for the highest-quality notes, quizzes, chat, and podcast voices. The key is stored only on this computer and used only to call your provider directly. A key you enter yourself is never overwritten by the publik setup.
 
 Your notes and generated content live only on your machine (in the app's local database); you can export everything from Settings at any time.
 
@@ -72,8 +73,8 @@ npm run app      # build, then launch the full desktop shell (Electron)
 Build installers locally:
 
 ```bash
-npm run dist:mac   # → release/NitroAI-<version>-<arch>.dmg
-npm run dist:win   # → release/NitroAI-Setup-<version>.exe
+npm run dist:mac   # → release/NitroAI-mac-<arch>.dmg
+npm run dist:win   # → release/NitroAI-Setup-Windows.exe
 ```
 
 Or let CI do it: push a tag (`git tag v0.1.0 && git push --tags`) and the
@@ -86,11 +87,13 @@ Other scripts: `npm test` (Vitest), `npm run typecheck`.
 
 ```
 src/            React app (UI + all generation/engine/ingest logic, TypeScript)
-  lib/engine/   provider abstraction: OpenAI, Anthropic, and local Ollama
+  lib/engine/   provider abstraction: publik API, OpenAI, Anthropic, and local Ollama
   lib/ingest/   text / url / youtube / pdf / docx / audio → normalized text
   lib/generation/  notes, flashcards, quiz, podcast, chat
 server/         the local server the desktop shell runs
-  httpServer.mjs  serves the built app + /api/youtube-extract + /api/local/*
+  httpServer.mjs  serves the built app + /api/youtube-extract + /api/local/* + /api/publik/*
+  publik.mjs      publik API credential (mint after consent, stored 0600, key never in the renderer)
+  publikProxy.mjs streaming proxy to publik API — the renderer's only door to it
   ytdlp.mjs       yt-dlp download + caption/audio extraction
   ollama.mjs      Ollama install / serve / model-pull lifecycle
 electron/       the desktop shell (starts the server, opens the window)
@@ -117,11 +120,17 @@ By default the release workflow produces **ad-hoc-signed** builds — valid, but
 | `WIN_CSC_LINK` | Your code-signing cert as a base64-encoded `.pfx` |
 | `WIN_CSC_KEY_PASSWORD` | The `.pfx` password |
 
+**publik API** (optional — makes publik the default engine in your build):
+
+| Secret | What it is |
+| --- | --- |
+| `PUBLIK_APP_TOKEN` | The `pat_…` app token publik issues for this app. Baked into the build (`extraMetadata.publik.appToken`); without it the build offers only Local and your own key. It identifies the build, not the user, and publik rate-limits what it can mint. |
+
 Then cut a release: `git tag v0.1.3 && git push --tags`. That's it — nothing else to configure.
 
 ## Tech
 
-React 19 · Vite · Tailwind · Electron shell · Ollama (local) · OpenAI / Anthropic (cloud) · KaTeX · FSRS spaced repetition. No backend, no telemetry, no account.
+React 19 · Vite · Tailwind · Electron shell · publik API (default) · Ollama (local) · OpenAI / Anthropic (your own key) · KaTeX · FSRS spaced repetition. No backend of its own, no telemetry, no account required.
 
 ## License
 
