@@ -13,15 +13,22 @@
  */
 
 import { app, BrowserWindow, shell } from "electron";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { startServer } from "../server/httpServer.mjs";
+import { STABLE_PORTS, startServer } from "../server/httpServer.mjs";
 import {
   ensureServingIfProvisioned,
   shutdown as shutdownOllama,
 } from "../server/ollama.mjs";
+import { appToken } from "../server/publik.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+// Inside app.asar this carries electron-builder's extraMetadata — including
+// `publik.appToken`, the build-time token that lets a fresh install mint its
+// own publik API key. Null in forks and local builds (see electron-builder.cjs).
+const pkg = require("../package.json");
 
 let mainWindow = null;
 let serverInfo = null; // { server, port, url }
@@ -50,7 +57,12 @@ async function ensureServer() {
     distDir: path.join(__dirname, "..", "dist"),
     binDir: binDir(),
     host: "127.0.0.1",
-    port: 0, // OS-assigned free port; avoids clashes with anything on 4173 etc.
+    // A stable port keeps the renderer's origin (and so its localStorage /
+    // IndexedDB) the same across launches — see STABLE_PORTS in httpServer.mjs.
+    ports: STABLE_PORTS,
+    // The token stays in this process and the local server; the renderer
+    // never sees it (nor the minted key — it talks through /api/publik/).
+    publik: { token: appToken({ packageJson: pkg }), appVersion: app.getVersion() },
   });
   return serverInfo;
 }
