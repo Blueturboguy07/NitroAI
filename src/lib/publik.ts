@@ -100,8 +100,8 @@ export async function fetchPublikWallet(): Promise<PublikWallet | null> {
       weekResetsAt: w.week?.resets_at,
       dailyCapMicros: w.daily_cap_micros,
       spentTodayMicros: w.spent_today_micros,
-      claimUrl: w.claim_url ?? undefined,
-      addCreditUrl: w.add_credit_url ?? undefined,
+      claimUrl: publikUrl(w.claim_url) ?? undefined,
+      addCreditUrl: publikUrl(w.add_credit_url) ?? undefined,
       source: "wallet",
     });
     return w;
@@ -211,6 +211,12 @@ export function linesToCapabilities(lines: string[] | null | undefined): EngineC
   };
 }
 
+/* Contract §11.4: claim_url / add_credit_url / plans_url are always on
+   https://publikhq.com/…; anything else is dropped before it can be opened. */
+export function publikUrl(u: unknown): string | null {
+  return typeof u === "string" && /^https:\/\/publikhq\.com\//.test(u) ? u : null;
+}
+
 /* ---- Errors → what the UI shows ------------------------------------------ */
 
 export interface CreditAction {
@@ -220,11 +226,14 @@ export interface CreditAction {
 
 /* A 402 renders the message plus EXACTLY ONE link: top_up_url. */
 export function creditAction(e: unknown): CreditAction | null {
-  if (e instanceof EngineError && e.kind === "credit" && e.detail.topUpUrl) {
-    return {
-      label: e.detail.claimState === "claimed" ? copy.addCreditLabel : "Link this computer",
-      url: e.detail.topUpUrl,
-    };
+  if (e instanceof EngineError && e.kind === "credit") {
+    const url = publikUrl(e.detail.topUpUrl);
+    if (url) {
+      return {
+        label: e.detail.claimState === "claimed" ? copy.addCreditLabel : "Link this computer",
+        url,
+      };
+    }
   }
   return null;
 }
@@ -242,4 +251,16 @@ export function publikErrorMessage(e: unknown): string | null {
 
 export function openExternal(url: string): void {
   window.open(url, "_blank", "noopener");
+}
+
+/* One shape for every error surface: the text to show and, for a publik 402,
+   the single link to render next to it. */
+export interface ShownError {
+  message: string;
+  action: CreditAction | null;
+}
+
+export function describeError(e: unknown, fallback = "Something went wrong."): ShownError {
+  const message = publikErrorMessage(e) ?? (e instanceof Error ? e.message : fallback);
+  return { message, action: creditAction(e) };
 }

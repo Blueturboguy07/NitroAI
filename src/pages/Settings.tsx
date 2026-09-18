@@ -18,7 +18,10 @@ import {
 } from "../lib/engine/keys";
 import { createEngine } from "../lib/engine";
 import { localSetupStatus } from "../lib/localSetup";
+import { fetchPublikStatus } from "../lib/publik";
+import { DISCLOSURE_VERSION } from "../lib/publikCopy";
 import LocalSetupModal from "../components/LocalSetupModal";
+import PublikSettings from "../components/PublikSettings";
 import { exportMarkdown, downloadText } from "../lib/export";
 import type { EngineMode } from "../lib/types";
 
@@ -43,8 +46,15 @@ const RECOMMENDED_MODELS: { id: string; label: string; note: string }[] = [
 ];
 
 export default function Settings() {
-  const { prefs, savePrefs, repo } = useApp();
+  const { prefs, savePrefs, repo, engine } = useApp();
   const [key, setKey] = useState("");
+  /* Whether this build can offer publik API at all (a token baked in at build
+     time, an existing credential, or PUBLIK_API_KEY). Forks and dev builds
+     without one never see the pill. */
+  const [publikOffered, setPublikOffered] = useState(false);
+  /* The pill was switched to publik but prefs.mode hasn't changed yet — the
+     disclosure (or reconnect) has to be accepted first. */
+  const [publikPending, setPublikPending] = useState(false);
   const [exportMsg, setExportMsg] = useState("");
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">(
     "idle",
@@ -62,6 +72,7 @@ export default function Settings() {
 
   useEffect(() => {
     loadApiKey().then(setKey);
+    fetchPublikStatus().then((s) => setPublikOffered(s.available));
   }, []);
 
   function refreshLocalModels() {
@@ -78,6 +89,14 @@ export default function Settings() {
   }, [prefs.mode]);
 
   function setMode(mode: EngineMode) {
+    if (mode === "publik") {
+      // The panel below takes it from here: it shows the disclosure when the
+      // install isn't provisioned (or the accepted disclosure is older than
+      // the current text) and only then flips prefs.mode.
+      setPublikPending(true);
+      return;
+    }
+    setPublikPending(false);
     if (mode === "local") {
       // Switching to local provisions Ollama the same way onboarding does —
       // install/start/pull as needed — before the engine is used. Checked
@@ -118,9 +137,10 @@ export default function Settings() {
     setMsg("");
     try {
       const p = detectProvider(key.trim());
-      if (!p) throw new Error("Key must start with sk- (OpenAI) or sk-ant- (Anthropic).");
+      if (!p) throw new Error("Key must start with sk- (OpenAI), sk-ant- (Anthropic) or pk_ (publik API).");
       await createEngine({ mode: "cloud", provider: p, apiKey: key.trim() }).validate();
       await saveApiKey(key.trim());
+      setPublikPending(false);
       savePrefs({ ...prefs, mode: "cloud" });
       setStatus("saved");
       setTimeout(() => setStatus("idle"), 2500);
@@ -177,22 +197,26 @@ export default function Settings() {
                   AI Engine
                 </h2>
                 <p className="mt-1 text-sm text-ink-faint">
-                  Run everything locally for free, or bring your own API key for
-                  cloud-quality output.
+                  {publikOffered
+                    ? "Run on publik API (pay per use, no account needed), run everything locally for free, or bring your own API key."
+                    : "Run everything locally for free, or bring your own API key for cloud-quality output."}
                 </p>
               </div>
               <div className="flex rounded-full border border-edge bg-panel p-1">
                 {(
                   [
+                    ...(publikOffered ? ([["publik", "publik API"]] as const) : []),
                     ["local", "Local"],
-                    ["cloud", "Cloud"],
-                  ] as const
+                    ["cloud", publikOffered ? "My own key" : "Cloud"],
+                  ] as ReadonlyArray<readonly [EngineMode, string]>
                 ).map(([k, label]) => (
                   <button
                     key={k}
-                    onClick={() => setMode(k as EngineMode)}
+                    onClick={() => setMode(k)}
                     className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
-                      prefs.mode === k ? "bg-accent text-white" : "text-ink-faint hover:text-ink"
+                      (publikPending ? k === "publik" : prefs.mode === k)
+                        ? "bg-accent text-white"
+                        : "text-ink-faint hover:text-ink"
                     }`}
                   >
                     {label}
@@ -201,7 +225,24 @@ export default function Settings() {
               </div>
             </div>
 
-            {prefs.mode === "cloud" ? (
+            {publikPending || prefs.mode === "publik" ? (
+              <PublikSettings
+                engine={engine}
+                disclosureAck={prefs.publikDisclosureAck ?? 0}
+                onActivated={() => {
+                  setPublikPending(false);
+                  savePrefs({ ...prefs, mode: "publik", publikDisclosureAck: DISCLOSURE_VERSION });
+                }}
+                onOwnKey={() => {
+                  setPublikPending(false);
+                  savePrefs({ ...prefs, mode: "cloud" });
+                }}
+                onLeft={() => {
+                  setPublikPending(false);
+                  savePrefs({ ...prefs, mode: null });
+                }}
+              />
+            ) : prefs.mode === "cloud" ? (
               <div className="mt-5">
                 <label className="text-sm font-semibold text-ink-dim">API key</label>
                 <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-edge bg-panel px-3 py-2.5">
@@ -210,12 +251,12 @@ export default function Settings() {
                     type="password"
                     value={key}
                     onChange={(e) => setKey(e.target.value)}
-                    placeholder="sk-... (OpenAI) or sk-ant-... (Anthropic) — auto-detected"
+                    placeholder="sk-… (OpenAI), sk-ant-… (Anthropic) or pk_… (publik API) — auto-detected"
                     className="w-full bg-transparent text-sm outline-none placeholder:text-ink-faint"
                   />
                   {provider && (
                     <span className="shrink-0 rounded-full bg-accent-softer px-2.5 py-1 text-xs font-bold text-accent">
-                      {provider === "anthropic" ? "Anthropic" : "OpenAI"}
+                      {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : "OpenAI"}
                     </span>
                   )}
                 </div>
@@ -248,8 +289,7 @@ export default function Settings() {
                   <p className="mt-2 text-xs font-semibold text-danger-ink">{msg}</p>
                 )}
                 <p className="mt-2 text-xs text-ink-faint">
-                  Stored in your system keychain, never in app files. One key powers
-                  every feature.
+                  Stored only on this computer. One key powers every feature.
                 </p>
               </div>
             ) : (

@@ -1,23 +1,59 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Cloud, Cpu, KeyRound, PenLine } from "lucide-react";
+import { Cloud, Cpu, KeyRound, PenLine, Zap } from "lucide-react";
 import { detectProvider, saveApiKey } from "../lib/engine/keys";
 import { getEnginePrefs } from "../lib/prefs";
 import { localSetupStatus } from "../lib/localSetup";
+import { fetchPublikStatus, provisionPublik, type PublikStatus } from "../lib/publik";
+import { DISCLOSURE_VERSION, onboardingCard, settings as publikCopy } from "../lib/publikCopy";
 import LocalSetupModal from "../components/LocalSetupModal";
+import { PublikDisclosure } from "../components/PublikNotice";
 import { useApp } from "../lib/app";
 import type { EngineMode } from "../lib/types";
+
+function provisionFailureText(reason: string | null | undefined): string {
+  switch (reason) {
+    case "token_revoked":
+    case "no_app_token":
+      return "publik API isn't available for this build. Use your own key or Local mode.";
+    case "rate_limited":
+      return "publik API can't set up another install from this network right now. Try again later, or use your own key.";
+    case "gateway_unavailable":
+    case "network":
+    case "no_server":
+      return publikCopy.unreachable;
+    default:
+      return publikCopy.unreachable;
+  }
+}
 
 export default function Onboarding() {
   const navigate = useNavigate();
   const { savePrefs } = useApp();
-  /* No default — the user must make an explicit choice. */
+  /* publik API is preselected when this build can offer it (a token was
+     baked in at build time, or a credential already exists). Otherwise the
+     page is exactly the two-card page it always was: the user must choose. */
+  const [publik, setPublik] = useState<PublikStatus | null>(null);
   const [mode, setMode] = useState<EngineMode | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
+  const [publikError, setPublikError] = useState<string | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const provider = detectProvider(apiKey.trim());
   const ready = mode === "local" || (mode === "cloud" && provider !== null);
+  const publikOffered = publik?.available === true;
+
+  useEffect(() => {
+    let alive = true;
+    fetchPublikStatus().then((s) => {
+      if (!alive) return;
+      setPublik(s);
+      setMode((m) => (m === null && s.available ? "publik" : m));
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function enter(nextMode: EngineMode, chatModel?: string) {
     const prefs = getEnginePrefs();
@@ -29,8 +65,25 @@ export default function Onboarding() {
       // the "is setup already done" check below) respect it instead of only
       // ever recognizing the hardcoded default.
       localModel: chatModel ?? prefs.localModel,
+      ...(nextMode === "publik" ? { publikDisclosureAck: DISCLOSURE_VERSION } : {}),
     });
     navigate("/", { replace: true });
+  }
+
+  /* "Continue with publik API" — the consent that triggers the mint. Nothing
+     is typed, nothing is written to the user's own key slot. */
+  async function continueWithPublik() {
+    if (busy) return;
+    setBusy(true);
+    setPublikError(null);
+    const r = await provisionPublik(DISCLOSURE_VERSION, publik?.state === "disconnected");
+    if (r.ok && r.state === "ready") {
+      enter("publik");
+      return;
+    }
+    setPublik(r);
+    setPublikError(provisionFailureText(r.reason));
+    setBusy(false);
   }
 
   async function finish() {
@@ -70,7 +123,17 @@ export default function Onboarding() {
         anytime in Settings.
       </p>
 
-      <div className="mt-10 grid w-full max-w-3xl gap-4 md:grid-cols-2">
+      <div className={`mt-10 grid w-full max-w-3xl gap-4 ${publikOffered ? "md:grid-cols-3" : "md:grid-cols-2"}`}>
+        {publikOffered && (
+          <ModeCard
+            active={mode === "publik"}
+            onClick={() => setMode("publik")}
+            icon={Zap}
+            title={onboardingCard.title}
+            badge={onboardingCard.badge}
+            body={onboardingCard.body}
+          />
+        )}
         <ModeCard
           active={mode === "local"}
           onClick={() => setMode("local")}
@@ -82,10 +145,24 @@ export default function Onboarding() {
           active={mode === "cloud"}
           onClick={() => setMode("cloud")}
           icon={Cloud}
-          title="Bring your own key"
+          title={publikOffered ? "Use my own key" : "Bring your own key"}
           body="Use your OpenAI or Anthropic key for the highest-quality notes, quizzes, chat, and voices. You pay your provider directly — no NitroAI subscription, ever."
         />
       </div>
+
+      {mode === "publik" && publikOffered && (
+        <div className="mt-6 w-full max-w-3xl">
+          <PublikDisclosure
+            busy={busy}
+            error={publikError}
+            onContinue={continueWithPublik}
+            onOwnKey={() => {
+              setPublikError(null);
+              setMode("cloud");
+            }}
+          />
+        </div>
+      )}
 
       {mode === "cloud" && (
         <div className="mt-6 w-full max-w-3xl">
@@ -101,27 +178,29 @@ export default function Onboarding() {
             />
             {provider && (
               <span className="shrink-0 rounded-full bg-accent-softer px-3 py-1 text-xs font-bold text-accent">
-                {provider === "anthropic" ? "Anthropic" : "OpenAI"}
+                {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : "OpenAI"}
               </span>
             )}
           </div>
           <p className="mt-2 text-xs text-ink-faint">
-            Stored in your system keychain. One key powers every feature.
+            Stored only on this computer. One key powers every feature.
           </p>
         </div>
       )}
 
-      <button
-        onClick={finish}
-        disabled={!ready || busy}
-        className={`mt-10 w-full max-w-3xl rounded-xl py-3.5 font-display font-bold transition ${
-          ready && !busy
-            ? "bg-accent text-white hover:bg-accent-hover"
-            : "cursor-not-allowed bg-accent-softer text-ink-faint"
-        }`}
-      >
-        {busy ? "Setting up…" : "Get started"}
-      </button>
+      {mode !== "publik" && (
+        <button
+          onClick={finish}
+          disabled={!ready || busy}
+          className={`mt-10 w-full max-w-3xl rounded-xl py-3.5 font-display font-bold transition ${
+            ready && !busy
+              ? "bg-accent text-white hover:bg-accent-hover"
+              : "cursor-not-allowed bg-accent-softer text-ink-faint"
+          }`}
+        >
+          {busy ? "Setting up…" : "Get started"}
+        </button>
+      )}
 
       {setupOpen && (
         <LocalSetupModal
@@ -144,12 +223,14 @@ function ModeCard({
   icon: Icon,
   title,
   body,
+  badge,
 }: {
   active: boolean;
   onClick: () => void;
   icon: typeof Cpu;
   title: string;
   body: string;
+  badge?: string;
 }) {
   return (
     <button
@@ -158,6 +239,11 @@ function ModeCard({
         active ? "border-accent bg-accent-softer" : "border-edge bg-card hover:bg-card-hover"
       }`}
     >
+      {badge && (
+        <span className="absolute right-4 top-4 rounded-full bg-accent px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+          {badge}
+        </span>
+      )}
       <Icon className={`size-7 ${active ? "text-accent" : "text-ink-dim"}`} />
       <h2 className="mt-3 font-display text-xl font-bold">{title}</h2>
       <p className="mt-1.5 text-sm text-ink-dim">{body}</p>

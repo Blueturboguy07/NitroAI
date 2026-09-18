@@ -233,7 +233,8 @@ export function credentialForRenderer(c, { available = true } = {}) {
     dialects: Array.isArray(c.dialects) ? c.dialects : ["chat_completions"],
     // Optional: a future gateway can narrow capabilities per install.
     lines: Array.isArray(c.lines) ? c.lines : null,
-    claimUrl: typeof c.claim_url === "string" ? c.claim_url : null,
+    // Contract §11.4: claim links live on https://publikhq.com/ only.
+    claimUrl: typeof c.claim_url === "string" && /^https:\/\/publikhq\.com\//.test(c.claim_url) ? c.claim_url : null,
     claimCode: typeof c.claim_code === "string" ? c.claim_code : null,
     installId: c.install_id,
     disclosureVersion: c.disclosure_version ?? DISCLOSURE_VERSION,

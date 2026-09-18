@@ -19,6 +19,8 @@ import CreateNoteModal, { type NoteSource } from "../components/CreateNoteModal"
 import { useApp } from "../lib/app";
 import type { IngestInput } from "../lib/ingest";
 import { createNoteFromSources } from "../lib/generation/pipeline";
+import { describeError, type ShownError } from "../lib/publik";
+import { ErrorNotice } from "../components/PublikNotice";
 import { exportMarkdown, downloadText } from "../lib/export";
 import { uuid, now } from "../lib/ids";
 import type { Folder, Job, Note, SourceKind } from "../lib/types";
@@ -68,7 +70,7 @@ export default function Dashboard() {
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [job, setJob] = useState<Job | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<ShownError | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -131,7 +133,7 @@ export default function Dashboard() {
     if (!repo) return;
     if (!engine) {
       setModal(null);
-      setErr("Set up your engine in Settings first (pick Local or add a key).");
+      setErr({ message: "Set up your engine in Settings first (pick publik API, Local, or add a key).", action: null });
       return;
     }
     setErr(null);
@@ -150,7 +152,7 @@ export default function Dashboard() {
     } catch (e) {
       setJob(null);
       setModal(null);
-      setErr(e instanceof Error ? e.message : "Generation failed.");
+      setErr(describeError(e, "Generation failed."));
     }
   }
 
@@ -201,8 +203,8 @@ export default function Dashboard() {
       </div>
 
       {err && (
-        <div className="mt-4 rounded-xl border border-danger-ink/30 bg-danger-soft px-4 py-3 text-sm font-semibold text-danger-ink">
-          {err}
+        <div className="mt-4">
+          <ErrorNotice err={err} />
         </div>
       )}
 
