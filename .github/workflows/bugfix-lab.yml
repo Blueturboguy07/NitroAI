@@ -22,3 +22,22 @@ jobs:
         shell: pwsh
         run: |
           .\scripts\bugfix-lab\nitroai-windows-electron-binary-download-stuck.ps1 -Mode ${{ matrix.mode }} -TimeoutSeconds 480 -PollSeconds 10
+
+  negative-control:
+    # Proves the oracle is sensitive: reruns the step the Aug 11 2026
+    # reporters actually had (guide v4's 'try-app', `npm.cmd run app`),
+    # which publik commit c761358 (2026-08-19) removed. See
+    # scripts/bugfix-lab/nitroai-guide-v4-try-app-negative-control.ps1.
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run negative control (guide v4 try-app)
+        shell: pwsh
+        run: |
+          .\scripts\bugfix-lab\nitroai-guide-v4-try-app-negative-control.ps1 -WaitSeconds 240
