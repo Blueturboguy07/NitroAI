@@ -1,0 +1,33 @@
+name: bugfix-lab
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_ref:
+        description: "NitroAI ref (tag/branch/sha) to run the oracle against"
+        required: true
+        default: "v0.1.6"
+
+jobs:
+  oracle:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout harness (this branch — oracle script + test fixture)
+        uses: actions/checkout@v4
+        with:
+          path: harness
+
+      - name: Checkout target ref under test
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.test_ref }}
+          path: target
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20.19"
+
+      - name: Run oracle
+        shell: pwsh
+        run: harness/scripts/bugfix-lab/nitroai-local-whisper-stt-missing-and-unclear.ps1 -TargetDir target
