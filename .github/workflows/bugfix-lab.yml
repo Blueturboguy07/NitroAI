@@ -5,6 +5,9 @@ name: bugfix-lab
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - fix/nitroai-windows-exe-smartscreen-block
 
 jobs:
   oracle:
