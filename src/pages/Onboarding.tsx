@@ -8,6 +8,7 @@ import { fetchPublikStatus, provisionPublik, type PublikStatus } from "../lib/pu
 import { DISCLOSURE_VERSION, onboardingCard, settings as publikCopy } from "../lib/publikCopy";
 import LocalSetupModal from "../components/LocalSetupModal";
 import { PublikDisclosure } from "../components/PublikNotice";
+import PublikWelcomeCard from "../components/PublikWelcome";
 import { useApp } from "../lib/app";
 import type { EngineMode } from "../lib/types";
 
@@ -38,6 +39,10 @@ export default function Onboarding() {
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const [publikError, setPublikError] = useState<string | null>(null);
+  /* The provision reply, once POST /installs succeeded. While set, the page
+     is the first-run card (contract §12.1) — the app is never entered before
+     the balance, the justification and the plan CTA were shown. */
+  const [provisioned, setProvisioned] = useState<PublikStatus | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
   const provider = detectProvider(apiKey.trim());
   const ready = mode === "local" || (mode === "cloud" && provider !== null);
@@ -78,7 +83,9 @@ export default function Onboarding() {
     setPublikError(null);
     const r = await provisionPublik(DISCLOSURE_VERSION, publik?.state === "disconnected");
     if (r.ok && r.state === "ready") {
-      enter("publik");
+      setPublik(r);
+      setProvisioned(r);
+      setBusy(false);
       return;
     }
     setPublik(r);
@@ -107,6 +114,20 @@ export default function Onboarding() {
       return;
     }
     enter("local");
+  }
+
+  if (provisioned) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center bg-bg px-6">
+        <div className="flex items-center gap-2">
+          <PenLine className="size-7 text-accent" />
+          <span className="font-display text-2xl font-bold tracking-tight">nitro ai</span>
+        </div>
+        <div className="mt-8 w-full max-w-3xl">
+          <PublikWelcomeCard status={provisioned} onLink={() => enter("publik")} onLater={() => enter("publik")} />
+        </div>
+      </div>
+    );
   }
 
   return (

@@ -50,6 +50,104 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const READY = { available: true, state: "ready", baseUrl: "/api/publik/v1", models: { fast: "publik-fast", balanced: "publik-balanced" } };
+const WHY =
+  "A provider charges for every request the app makes; publik pays that bill and passes it on at half the provider's list price. Nothing is charged behind your back — usage only draws from a plan or pack you choose to buy.";
+
+describe("Onboarding — first-run card after the mint (contract §12)", () => {
+  it("shows the balance from the mint reply, the justification, and a primary CTA that opens the reply's claim_url", async () => {
+    const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" }, () => ({
+      ok: true,
+      minted: true,
+      ...READY,
+      claimUrl: "https://publikhq.com/claim/HK7F-2QWD",
+      starterMicros: 250_000,
+      balanceMicros: 250_000,
+    }));
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await renderOnboarding();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
+
+    const card = await screen.findByTestId("publik-welcome-card");
+    // (a) balance line from the response, (b) the one sentence, (c) the primary button — in that order.
+    expect(screen.getByTestId("publik-starter-line")).toHaveTextContent("$0.25 of free starter usage");
+    expect(card).toHaveTextContent(WHY);
+    const primary = screen.getByRole("button", { name: /^Link this computer & pick a plan/ });
+    expect(card.textContent!.indexOf("$0.25 of free starter usage")).toBeLessThan(card.textContent!.indexOf("A provider charges"));
+    expect(card.textContent!.indexOf("A provider charges")).toBeLessThan(card.textContent!.indexOf("Link this computer & pick a plan"));
+    // Copy rule (contract §1): dollars, never "credits", never "OpenAI API access".
+    expect(card.textContent).not.toMatch(/\bcredits\b|OpenAI API access|ChatGPT credits/i);
+    expect(open).not.toHaveBeenCalled();
+
+    await user.click(primary);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith("https://publikhq.com/claim/HK7F-2QWD", "_blank", "noopener");
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs") ?? "{}")).toMatchObject({ mode: "publik", onboarded: true }));
+    expect(calls.filter((c) => c.url === "/api/publik/provision")).toHaveLength(1);
+  });
+
+  it("renders whatever starter amount the server sent — never a fixed figure", async () => {
+    stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" }, () => ({
+      ok: true,
+      minted: true,
+      ...READY,
+      claimUrl: "https://publikhq.com/claim/AAAA-BBBB",
+      starterMicros: 1_000_000,
+    }));
+    await renderOnboarding();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
+    expect(await screen.findByTestId("publik-starter-line")).toHaveTextContent("$1.00 of free starter usage");
+  });
+
+  it("a claim_url off publikhq.com is dropped: no primary button, 'Later' still works", async () => {
+    stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" }, () => ({
+      ok: true,
+      minted: true,
+      ...READY,
+      claimUrl: "https://evil.example/claim/HK7F-2QWD",
+      starterMicros: 250_000,
+    }));
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await renderOnboarding();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
+    await screen.findByTestId("publik-welcome-card");
+    expect(screen.queryByRole("button", { name: /Link this computer & pick a plan/ })).not.toBeInTheDocument();
+    expect(document.body.innerHTML).not.toContain("evil.example");
+    await user.click(screen.getByRole("button", { name: "Later" }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs") ?? "{}")).toMatchObject({ mode: "publik", onboarded: true }));
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("'Later' keeps the free starter: the credential stays, the user's own key is untouched, nothing is forgotten or re-minted", async () => {
+    localStorage.setItem("nitroai.apikey", "sk-user-key-untouched");
+    const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" }, () => ({
+      ok: true,
+      minted: true,
+      ...READY,
+      claimUrl: "https://publikhq.com/claim/HK7F-2QWD",
+      starterMicros: 250_000,
+    }));
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await renderOnboarding();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
+    await user.click(await screen.findByRole("button", { name: "Later" }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs") ?? "{}")).toMatchObject({ mode: "publik", onboarded: true, publikDisclosureAck: 2 }));
+    expect(open).not.toHaveBeenCalled();
+    expect(localStorage.getItem("nitroai.apikey")).toBe("sk-user-key-untouched");
+    const urls = calls.map((c) => c.url);
+    expect(urls).not.toContain("/api/publik/forget");
+    expect(urls).not.toContain("/api/publik/disconnect");
+    expect(urls.filter((u) => u === "/api/publik/provision")).toHaveLength(1);
+  });
+});
+
 describe("Onboarding — publik API default", () => {
   it("offers three cards with publik preselected and the disclosure; Continue mints and writes prefs, never the key slot", async () => {
     const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1", disclosureVersion: 2 });
@@ -69,6 +167,12 @@ describe("Onboarding — publik API default", () => {
     expect(calls.filter((c) => c.url === "/api/publik/provision")).toHaveLength(0);
 
     await user.click(screen.getByRole("button", { name: "Continue with publik API" }));
+
+    // Contract §12.1/12.4: the mint is followed by the first-run card, never
+    // by a silent entry into the app.
+    await screen.findByTestId("publik-welcome-card");
+    expect(localStorage.getItem("nitroai.prefs")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Later" }));
 
     await waitFor(() => {
       const prefs = JSON.parse(localStorage.getItem("nitroai.prefs") ?? "{}");
