@@ -19,7 +19,7 @@ import type { Engine } from "./engine/types";
 import { resilient } from "./engine/resilient";
 import { detectProvider, loadApiKey } from "./engine/keys";
 import { getEnginePrefs, saveEnginePrefs } from "./prefs";
-import { fetchPublikStatus, linesToCapabilities, usageToBalance } from "./publik";
+import { fetchPublikStatus, linesToCapabilities, statusToBalance, usageToBalance } from "./publik";
 import type { EnginePrefs } from "./types";
 import { reconcileJobs } from "./generation/pipeline";
 
@@ -54,6 +54,9 @@ export async function buildEngine(
     // is never read on this path.
     const s = await fetchPublikStatus();
     if (!s.available || s.state !== "ready") return null;
+    // The starter grant and claim link seed the balance store so the
+    // low-starter banner has its denominator and its one link.
+    statusToBalance(s);
     return resilient(
       createEngine({
         mode: "cloud",

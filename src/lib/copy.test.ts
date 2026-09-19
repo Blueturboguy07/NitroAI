@@ -24,6 +24,8 @@ const publikFacing = [
   "src/lib/publik.ts",
   "src/components/PublikNotice.tsx",
   "src/components/PublikSettings.tsx",
+  "src/components/PublikWelcome.tsx",
+  "src/components/PublikBanner.tsx",
   "src/pages/Onboarding.tsx",
   "src/pages/Settings.tsx",
 ].map((f) => path.join(root, f));
@@ -53,6 +55,25 @@ describe("publik copy rule", () => {
     expect(text).toContain("Most people spend under $2 a month");
     expect(text).toContain("never trains on them");
     expect(text).toContain("at cost");
+  });
+
+  it("contract §12: the one justification sentence and the plan CTA live in publikCopy.ts and nowhere invents a pricing claim", () => {
+    const text = fs.readFileSync(path.join(root, "src/lib/publikCopy.ts"), "utf8");
+    expect(text).toContain(
+      "A provider charges for every request the app makes; publik pays that bill and passes it on at half the provider's list price. Nothing is charged behind your back — usage only draws from a plan or pack you choose to buy.",
+    );
+    expect(text).toContain('"Link this computer & pick a plan"');
+    expect(text).toContain('"Pick a plan"');
+    expect(text).toContain('"Manage plan"');
+    expect(text).toContain('"Why it costs money"');
+    expect(text).toContain("https://publikhq.com/dashboard/api");
+    // The justification is written once; the components render it, never restate it.
+    for (const f of publikFacing.filter((f) => !f.endsWith("publikCopy.ts"))) {
+      expect(fs.readFileSync(f, "utf8"), f).not.toMatch(/half the provider's list price/);
+    }
+    // No provider is named in the justification (contract §12.5).
+    const why = text.match(/export const whyItCosts =\s*"([^"]+)"/)?.[1] ?? "";
+    expect(why).not.toMatch(/OpenAI|Anthropic|Google|Gemini|GPT|Claude/);
   });
 
   it("no page claims the key lives in the system keychain", () => {
