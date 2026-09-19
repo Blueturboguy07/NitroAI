@@ -1,0 +1,17 @@
+name: bugfix-lab
+
+# Controlled environment for cluster nitroai-windows-exe-smartscreen-block.
+# Dispatch manually: gh workflow run bugfix-lab.yml -R Blueturboguy07/NitroAI --ref fix/nitroai-windows-exe-smartscreen-block
+
+on:
+  workflow_dispatch:
+
+jobs:
+  oracle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run oracle
+        shell: pwsh
+        run: |
+          ./scripts/bugfix-lab/nitroai-windows-exe-smartscreen-block.ps1
