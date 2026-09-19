@@ -1,0 +1,36 @@
+name: bugfix-lab oracle (nitroai-new-folder-button-noop)
+
+on:
+  workflow_dispatch:
+    inputs:
+      test_ref:
+        description: "Commit SHA or ref of NitroAI to run the oracle against"
+        required: true
+
+jobs:
+  oracle:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout tooling (this branch — oracle script + test source)
+        uses: actions/checkout@v4
+        with:
+          path: tooling
+
+      - name: Checkout target ref under test
+        uses: actions/checkout@v4
+        with:
+          path: target
+          ref: ${{ inputs.test_ref }}
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Run oracle
+        shell: pwsh
+        run: |
+          pwsh -File tooling/scripts/bugfix-lab/nitroai-new-folder-button-noop.ps1 `
+            -TargetDir "${{ github.workspace }}/target" `
+            -OracleTestFile "${{ github.workspace }}/tooling/oracle-test-source.tsx"
