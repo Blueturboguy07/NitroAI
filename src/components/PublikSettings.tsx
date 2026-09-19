@@ -1,6 +1,7 @@
-/* The "publik API" panel in Settings (R21 §4.1). Four states:
-     ready        → balance line, capability line, link / add credit / pricing,
-                    "use my own key instead", disconnect
+/* The "publik API" panel in Settings (R21 §4.1, contract §12.2). States:
+     just minted  → the first-run card (balance, why it costs, plan CTA)
+     ready        → balance line, "Pick a plan" / "Manage plan", why-it-costs
+                    toggle, pricing, "use my own key instead", disconnect
      disconnected → the install was removed from the user's account
      unprovisioned→ the disclosure (consent precedes mint)
      unreachable  → nothing is charged; retry
@@ -8,7 +9,7 @@
    GET /wallet as the fallback/refresh. */
 
 import { useEffect, useState } from "react";
-import { ExternalLink, RefreshCw, Zap } from "lucide-react";
+import { ChevronDown, ChevronRight, ExternalLink, RefreshCw, Zap } from "lucide-react";
 import type { Engine } from "../lib/engine/types";
 import {
   balanceLine,
@@ -26,8 +27,9 @@ import {
   type PublikBalance,
   type PublikStatus,
 } from "../lib/publik";
-import { DISCLOSURE_VERSION, PUBLIK_PRICING_URL, settings as copy } from "../lib/publikCopy";
+import { cta, DISCLOSURE_VERSION, PUBLIK_DASHBOARD_URL, PUBLIK_PRICING_URL, settings as copy, whyItCosts } from "../lib/publikCopy";
 import { PublikDisclosure } from "./PublikNotice";
+import PublikWelcomeCard from "./PublikWelcome";
 
 export default function PublikSettings({
   engine,
@@ -51,6 +53,10 @@ export default function PublikSettings({
   const [unreachable, setUnreachable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /* Set right after a successful mint from this panel: the first-run card
+     (contract §12.1) shows until "Later" or the plan link. */
+  const [justMinted, setJustMinted] = useState<PublikStatus | null>(null);
+  const [whyOpen, setWhyOpen] = useState(false);
 
   async function refresh() {
     const s = await fetchPublikStatus();
@@ -73,6 +79,7 @@ export default function PublikSettings({
     setBusy(false);
     if (r.ok && r.state === "ready") {
       setStatus(r);
+      setJustMinted(r);
       onActivated();
       void fetchPublikWallet().then((w) => setUnreachable(w === null));
       return;
@@ -104,6 +111,14 @@ export default function PublikSettings({
     );
   }
 
+  if (justMinted) {
+    return (
+      <div className="mt-5">
+        <PublikWelcomeCard status={justMinted} onLink={() => setJustMinted(null)} onLater={() => setJustMinted(null)} />
+      </div>
+    );
+  }
+
   if (status.state !== "ready" || disclosureAck < DISCLOSURE_VERSION) {
     return (
       <div className="mt-5">
@@ -115,7 +130,9 @@ export default function PublikSettings({
   const caps = engine?.provider === "publik" ? engine.capabilities() : null;
   const anonymous = (balance.claimState ?? "anonymous") !== "claimed";
   const linkUrl = publikUrl(balance.claimUrl) ?? publikUrl(status.claimUrl);
-  const addCreditUrl = publikUrl(balance.addCreditUrl);
+  /* Contract §12.2: "Pick a plan" → claim_url while anonymous; once claimed
+     "Manage plan" → the dashboard's API page. */
+  const planUrl = anonymous ? linkUrl : PUBLIK_DASHBOARD_URL;
   const line = balanceLine(balance);
 
   return (
@@ -134,12 +151,12 @@ export default function PublikSettings({
               : line
                 ? `${line}${balance.stale ? " · updating…" : ""}`
                 : status.starterMicros != null
-                  ? `${dollars(status.starterMicros)} free starter balance`
+                  ? cta.starterLine(dollars(status.starterMicros))
                   : "Balance loading…"}
           </p>
           {!unreachable && anonymous && balance.starterRemainingMicros !== undefined && status.starterMicros != null && (
             <p className="mt-0.5 text-xs text-ink-faint">
-              {dollars(balance.starterRemainingMicros)} left of {dollars(status.starterMicros)} free starter balance
+              {dollars(balance.starterRemainingMicros)} left of {cta.starterLine(dollars(status.starterMicros))}
             </p>
           )}
           {balance.lastChargeMicros !== undefined && (
@@ -164,22 +181,26 @@ export default function PublikSettings({
         </p>
       )}
 
+      <div className="mt-3">
+        <button
+          type="button"
+          onClick={() => setWhyOpen((o) => !o)}
+          aria-expanded={whyOpen}
+          className="inline-flex items-center gap-1 text-xs font-semibold text-ink-dim hover:text-ink"
+        >
+          {whyOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          {cta.whyLabel}
+        </button>
+        {whyOpen && <p className="mt-1 text-xs text-ink-dim" data-testid="publik-why-it-costs">{whyItCosts}</p>}
+      </div>
+
       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
-        {anonymous && linkUrl && (
+        {planUrl && (
           <button
-            onClick={() => openExternal(linkUrl)}
+            onClick={() => openExternal(planUrl)}
             className="inline-flex items-center gap-1 rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover"
           >
-            {copy.linkLabel}
-            <ExternalLink className="size-3" />
-          </button>
-        )}
-        {!anonymous && addCreditUrl && (
-          <button
-            onClick={() => openExternal(addCreditUrl)}
-            className="inline-flex items-center gap-1 rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover"
-          >
-            {copy.addCreditLabel}
+            {anonymous ? cta.pickPlanLabel : cta.managePlanLabel}
             <ExternalLink className="size-3" />
           </button>
         )}

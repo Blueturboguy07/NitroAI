@@ -85,9 +85,64 @@ describe("Settings — publik API", () => {
     await renderSettings();
     const line = await screen.findByTestId("publik-balance-line");
     await waitFor(() => expect(line).toHaveTextContent("$4.87 left · $0.13 used this week"));
-    expect(screen.getByRole("button", { name: /Link this computer to your publik account/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Pick a plan/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Manage plan/ })).not.toBeInTheDocument();
     expect(screen.getByText(/passed through at cost/)).toBeInTheDocument();
     expect(localStorage.getItem("nitroai.apikey")).toBe("sk-user-key-untouched");
+  });
+
+  it("contract §12.2: 'Pick a plan' opens claim_url while anonymous; the 'Why it costs money' toggle reveals the one justification sentence", async () => {
+    localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
+    stubServer(
+      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 250000 },
+      { balance_micros: 250_000, claim_state: "anonymous", claim_url: "https://publikhq.com/claim/HK7F-2QWD" },
+    );
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await renderSettings();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /^Pick a plan/ }));
+    expect(open).toHaveBeenCalledWith("https://publikhq.com/claim/HK7F-2QWD", "_blank", "noopener");
+
+    expect(screen.queryByTestId("publik-why-it-costs")).not.toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: "Why it costs money" });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("publik-why-it-costs")).toHaveTextContent(
+      "A provider charges for every request the app makes; publik pays that bill and passes it on at half the provider's list price. Nothing is charged behind your back — usage only draws from a plan or pack you choose to buy.",
+    );
+    await user.click(toggle);
+    expect(screen.queryByTestId("publik-why-it-costs")).not.toBeInTheDocument();
+  });
+
+  it("contract §12.2: once claimed the button reads 'Manage plan' and opens the dashboard's API page", async () => {
+    localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
+    stubServer(
+      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 250000 },
+      { balance_micros: 1_850_000, claim_state: "claimed", add_credit_url: "https://publikhq.com/dashboard/api/add", plan: { id: "basic", label: "Basic", monthly_micros: 8_000_000 } },
+    );
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await renderSettings();
+    const user = userEvent.setup();
+    const manage = await screen.findByRole("button", { name: /^Manage plan/ });
+    expect(screen.queryByRole("button", { name: /^Pick a plan/ })).not.toBeInTheDocument();
+    await user.click(manage);
+    expect(open).toHaveBeenCalledWith("https://publikhq.com/dashboard/api", "_blank", "noopener");
+  });
+
+  it("an off-publikhq.com claim link is dropped: no plan button rather than a foreign link", async () => {
+    localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
+    stubServer(
+      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://evil.example/claim/X", starterMicros: 250000 },
+      { balance_micros: 250_000, claim_state: "anonymous", claim_url: "https://evil.example/claim/X" },
+    );
+    await renderSettings();
+    await screen.findByRole("button", { name: "Why it costs money" });
+    expect(screen.queryByRole("button", { name: /^Pick a plan/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Manage plan/ })).not.toBeInTheDocument();
   });
 
   it("without a build token the publik pill is absent and the page reads as before", async () => {
