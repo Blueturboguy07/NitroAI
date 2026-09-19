@@ -94,68 +94,61 @@ if ($Mode -eq "precondition") {
 }
 
 # --- Step 3: the package step itself (`npm.cmd run dist:win`), run as a
-# child process whose combined stdout/stderr we poll, so we can time how
-# long it sits at 'Downloading Electron binary...' without acting on the
-# output ourselves (matches the reporter: a human just watching the shell). ---
+# child process whose combined stdout/stderr we poll via redirected log
+# files (NOT .NET async output EVENTS — PowerShell event-handler scriptblocks
+# run in their own scope and silently cannot see this script's local
+# variables, which produced an empty buffer and a false read on the first
+# attempt at this oracle; file redirection has no such scoping trap), so we
+# can time how long it sits at 'Downloading Electron binary...' without
+# acting on the output ourselves (matches the reporter: a human just
+# watching the shell). ---
 Write-Host "`n--- npm.cmd run dist:win ---"
 if (Test-Path release) { Remove-Item -Recurse -Force release -ErrorAction SilentlyContinue }
 
-$logPath = "$env:RUNNER_TEMP\dist-win-output.log"
-Remove-Item $logPath -ErrorAction SilentlyContinue
+$stdoutLog = "$env:RUNNER_TEMP\dist-win-stdout.log"
+$stderrLog = "$env:RUNNER_TEMP\dist-win-stderr.log"
+Remove-Item $stdoutLog, $stderrLog -ErrorAction SilentlyContinue
 
-$psi = New-Object System.Diagnostics.ProcessStartInfo
-$psi.FileName = "npm.cmd"
-$psi.Arguments = "run dist:win"
-$psi.WorkingDirectory = $repoRoot
-$psi.RedirectStandardOutput = $true
-$psi.RedirectStandardError = $true
-$psi.UseShellExecute = $false
-$proc = New-Object System.Diagnostics.Process
-$proc.StartInfo = $psi
+# Launched via cmd.exe /c so this behaves identically to a person typing the
+# guide's literal command into a console, regardless of .NET's handling of
+# .cmd batch files under ProcessStartInfo.
+$proc = Start-Process -FilePath "cmd.exe" `
+    -ArgumentList "/c", "npm.cmd run dist:win" `
+    -WorkingDirectory $repoRoot `
+    -RedirectStandardOutput $stdoutLog `
+    -RedirectStandardError $stderrLog `
+    -PassThru -NoNewWindow
 
-$outBuf = New-Object System.Text.StringBuilder
-$lockObj = New-Object object
-$handler = {
-    param($sender, $e)
-    if ($null -ne $e.Data) {
-        [System.Threading.Monitor]::Enter($lockObj)
-        try { $outBuf.AppendLine($e.Data) | Out-Null }
-        finally { [System.Threading.Monitor]::Exit($lockObj) }
-    }
+function Get-CombinedOutput {
+    $text = ""
+    if (Test-Path $stdoutLog) { $text += (Get-Content $stdoutLog -Raw -ErrorAction SilentlyContinue) }
+    if (Test-Path $stderrLog) { $text += (Get-Content $stderrLog -Raw -ErrorAction SilentlyContinue) }
+    return $text
 }
-Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -Action $handler | Out-Null
-Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action $handler | Out-Null
-
-$proc.Start() | Out-Null
-$proc.BeginOutputReadLine()
-$proc.BeginErrorReadLine()
 
 $startTime = Get-Date
 $sawDownloadLine = $false
 $lastLen = 0
 $lastProgressAt = $startTime
-$elapsed = 0
+$elapsed = New-TimeSpan
 
 while ($true) {
     Start-Sleep -Seconds $PollSeconds
     $elapsed = (Get-Date) - $startTime
 
-    [System.Threading.Monitor]::Enter($lockObj)
-    $snapshot = $outBuf.ToString()
-    [System.Threading.Monitor]::Exit($lockObj)
+    $snapshot = Get-CombinedOutput
 
     if (-not $sawDownloadLine -and $snapshot -match "Downloading Electron binary") {
         $sawDownloadLine = $true
         Write-Host "[$([int]$elapsed.TotalSeconds)s] saw 'Downloading Electron binary...' — starting stall timer"
         $lastProgressAt = Get-Date
         $lastLen = $snapshot.Length
-    } elseif ($sawDownloadLine) {
-        if ($snapshot.Length -gt $lastLen) {
-            $lastProgressAt = Get-Date
-            $lastLen = $snapshot.Length
-        }
+    } elseif ($sawDownloadLine -and $snapshot.Length -gt $lastLen) {
+        $lastProgressAt = Get-Date
+        $lastLen = $snapshot.Length
     }
 
+    $proc.Refresh()
     if ($proc.HasExited) { break }
 
     if ($sawDownloadLine) {
@@ -170,12 +163,9 @@ while ($true) {
     }
 }
 
-[System.Threading.Monitor]::Enter($lockObj)
-$finalOutput = $outBuf.ToString()
-[System.Threading.Monitor]::Exit($lockObj)
-Set-Content -Path $logPath -Value $finalOutput
-
+$finalOutput = Get-CombinedOutput
 $hung = $sawDownloadLine -and (-not $proc.HasExited)
+$exitCode = $null
 
 if (-not $proc.HasExited) {
     Write-Host "Killing still-running dist:win process tree (pid $($proc.Id))"
@@ -184,6 +174,8 @@ if (-not $proc.HasExited) {
     Get-Process npm, electron-builder, node -ErrorAction SilentlyContinue |
         Where-Object { $_.StartTime -ge $startTime } |
         ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch {} }
+} else {
+    $exitCode = $proc.ExitCode
 }
 
 if ($preApp) {
@@ -192,7 +184,7 @@ if ($preApp) {
 
 Write-Host "`n=== last 60 lines of dist:win output ==="
 ($finalOutput -split "`r?`n") | Select-Object -Last 60 | ForEach-Object { Write-Host $_ }
-Write-Host "=== exit code (if process exited): $(if ($proc.HasExited) { $proc.ExitCode } else { 'never exited (killed)' }) ==="
+Write-Host "=== exit code (if process exited): $(if ($null -ne $exitCode) { $exitCode } else { 'never exited (killed)' }) ==="
 
 $installerBuilt = Test-Path "release\NitroAI-Setup-Windows.exe"
 
@@ -200,11 +192,11 @@ if ($hung -and -not $installerBuilt) {
     Write-Host "`nBUGFIX_LAB_PRESENT"
     Write-Host "Evidence: mode=$Mode, saw 'Downloading Electron binary...' at ~$([int]($lastProgressAt - $startTime).TotalSeconds -as [int])s-ish, then no output growth for >= $TimeoutSeconds s, process still running when killed, no installer produced in release\."
     exit 1
-} elseif ($proc.HasExited -and $proc.ExitCode -eq 0 -and $installerBuilt) {
+} elseif ($exitCode -eq 0 -and $installerBuilt) {
     Write-Host "`nBUGFIX_LAB_ABSENT"
     Write-Host "Evidence: mode=$Mode, dist:win completed in $([int]$elapsed.TotalSeconds)s, release\NitroAI-Setup-Windows.exe exists."
     exit 0
 } else {
-    Write-Host "`nBUGFIX_LAB_ABSENT (did not reproduce the specific hang; process exited code=$(if ($proc.HasExited) { $proc.ExitCode } else { 'n/a' }), installerBuilt=$installerBuilt — a different failure, not 'hangs with no progress/error')"
+    Write-Host "`nBUGFIX_LAB_ABSENT (did not reproduce the specific hang; process exit code=$(if ($null -ne $exitCode) { $exitCode } else { 'n/a' }), installerBuilt=$installerBuilt — a different failure, not 'hangs with no progress/error')"
     exit 0
 }
