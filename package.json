@@ -1,7 +1,7 @@
 {
   "name": "nitroai",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Free, local-first AI study notes \u2014 turn any lecture, PDF, or video into notes, flashcards, quizzes, and a study chat.",
   "author": "NitroAI contributors",
