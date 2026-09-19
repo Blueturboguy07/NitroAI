@@ -9,7 +9,7 @@
 
 import { EngineError, type EngineCapabilities } from "./engine/types";
 import type { UsageHeaders } from "./engine/openai";
-import { settings as copy } from "./publikCopy";
+import { cta, settings as copy } from "./publikCopy";
 
 export interface PublikStatus {
   /* Can publik be offered on this machine at all (a build token, a
@@ -125,6 +125,12 @@ export interface PublikBalance {
   lastReservedMicros?: number;
   claimUrl?: string;
   addCreditUrl?: string;
+  /* The starter grant from the mint reply (status.starterMicros) — the
+     denominator of the "below 20%" banner. Never hardcoded. */
+  starterMicros?: number;
+  /* The last 402 (contract §12.3): the server's own message plus exactly one
+     link, top_up_url. Cleared by the next successful metered call. */
+  creditNotice?: { message: string; url: string; claimState?: string; at: number } | null;
   /* "headers" after a metered call, "wallet" after GET /wallet. Streams
      settle after their headers, so a streamed call marks the balance stale
      until the next wallet refresh. */
@@ -168,7 +174,43 @@ export function usageToBalance(u: UsageHeaders): void {
     ...(u.reservedMicros !== undefined ? { lastReservedMicros: u.reservedMicros } : {}),
     source: "headers",
     stale: u.streamed,
+    creditNotice: null,
   });
+}
+
+/* Status → store: the starter grant and the claim link travel with the
+   credential, not with the wallet, so buildEngine() seeds them from here. */
+export function statusToBalance(s: PublikStatus): void {
+  const patch: PublikBalance = {};
+  if (typeof s.starterMicros === "number") patch.starterMicros = s.starterMicros;
+  const claimUrl = publikUrl(s.claimUrl);
+  if (claimUrl) patch.claimUrl = claimUrl;
+  if (Object.keys(patch).length) setBalance(patch);
+}
+
+/* Contract §12.3 / task item 3: a 402 (or a spend cap with a link) becomes a
+   non-blocking banner. Called from describeError(), i.e. by every surface
+   that already shows the inline error, so nothing new has to be wired. */
+export function noteCreditError(e: unknown): void {
+  const action = creditAction(e);
+  if (!action || !(e instanceof EngineError)) return;
+  setBalance({
+    creditNotice: { message: e.message, url: action.url, claimState: e.detail.claimState, at: Date.now() },
+    ...(e.detail.claimState !== undefined ? { claimState: e.detail.claimState } : {}),
+  });
+}
+
+export function clearCreditNotice(): void {
+  if (balance.creditNotice) setBalance({ creditNotice: null });
+}
+
+/* The starter is "low" below 20% of the grant while the install is still
+   anonymous (contract §12; task item 3). Both numbers come from the server. */
+export const LOW_STARTER_FRACTION = 0.2;
+export function starterIsLow(b: PublikBalance): boolean {
+  if ((b.claimState ?? "anonymous") === "claimed") return false;
+  if (typeof b.starterRemainingMicros !== "number" || typeof b.starterMicros !== "number" || b.starterMicros <= 0) return false;
+  return b.starterRemainingMicros < b.starterMicros * LOW_STARTER_FRACTION;
 }
 
 /* ---- Formatting ---------------------------------------------------------- */
@@ -230,7 +272,7 @@ export function creditAction(e: unknown): CreditAction | null {
     const url = publikUrl(e.detail.topUpUrl);
     if (url) {
       return {
-        label: e.detail.claimState === "claimed" ? copy.addCreditLabel : "Link this computer",
+        label: e.detail.claimState === "claimed" ? copy.addPlanLabel : cta.linkLabel,
         url,
       };
     }
@@ -243,7 +285,11 @@ export function publikErrorMessage(e: unknown): string | null {
   if (!(e instanceof EngineError)) return null;
   if (e.kind === "credit") {
     if (e.detail.retryAfterSeconds && !e.detail.topUpUrl) return e.message;
-    return e.detail.claimState === "claimed" ? `${copy.exhaustedClaimed} ${e.message}` : copy.exhaustedAnonymous;
+    // Contract §12.3: the gateway's message already carries the justification
+    // and says what the link does — render it as is. The local copy is only
+    // for a reply with no usable message.
+    if (e.message.trim()) return e.message;
+    return e.detail.claimState === "claimed" ? copy.exhaustedClaimed : copy.exhaustedAnonymous;
   }
   if (e.kind === "auth" && e.detail.disconnected) return copy.disconnected;
   return null;
@@ -262,5 +308,6 @@ export interface ShownError {
 
 export function describeError(e: unknown, fallback = "Something went wrong."): ShownError {
   const message = publikErrorMessage(e) ?? (e instanceof Error ? e.message : fallback);
+  noteCreditError(e);
   return { message, action: creditAction(e) };
 }
