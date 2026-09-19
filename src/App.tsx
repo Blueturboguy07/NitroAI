@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import AppShell from "./components/AppShell";
+import PublikBanner from "./components/PublikBanner";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 import NoteView from "./pages/NoteView";
@@ -25,15 +26,20 @@ export default function App() {
   }
 
   return (
-    <Routes>
-      <Route path="/onboarding" element={<Onboarding />} />
-      <Route element={<AppShell />}>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/settings" element={<Settings />} />
-      </Route>
-      <Route path="/notes/:id" element={<Navigate to="editor" replace />} />
-      <Route path="/notes/:id/:view" element={<NoteView />} />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <div className="flex h-full flex-col">
+      {location.pathname !== "/onboarding" && <PublikBanner />}
+      <div className="min-h-0 flex-1">
+        <Routes>
+          <Route path="/onboarding" element={<Onboarding />} />
+          <Route element={<AppShell />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/settings" element={<Settings />} />
+          </Route>
+          <Route path="/notes/:id" element={<Navigate to="editor" replace />} />
+          <Route path="/notes/:id/:view" element={<NoteView />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </div>
+    </div>
   );
 }
