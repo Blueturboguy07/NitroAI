@@ -106,6 +106,31 @@ jobs:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
 
+      # electron-builder notarizes and staples the .app, but the dmg it wraps
+      # around it is never submitted, so a downloaded dmg has no ticket of its
+      # own and Gatekeeper has to ask Apple at open time — which fails offline.
+      # Observed on v0.2.1: the app validated, the dmg answered "does not have
+      # a ticket stapled to it". Submitting the finished dmg is quick (its
+      # contents are already notarized) and makes the download self-contained.
+      - name: Notarize and staple the dmg
+        if: matrix.os == 'macos-latest' && env.APPLE_ID != ''
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for dmg in release/*.dmg; do
+            echo "notarizing $dmg"
+            xcrun notarytool submit "$dmg" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" --wait
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+          done
+
       - name: Upload installers as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
