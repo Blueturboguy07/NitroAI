@@ -1,10 +1,55 @@
 name: bugfix-lab (nitroai-windows-electron-binary-download-stuck)
 
+# Controlled Windows environment for cluster nitroai-windows-electron-binary-download-stuck.
+#
+# mode = today | v3  ->  runs publik's NitroAI Windows guide commands in ONE PowerShell
+#   session, the way a reader does, and reports whether that session ever gets to finish
+#   the "Build the installer" step. `today` is the live guide (version 11); `v3` is the
+#   guide version that was live at the two reports' timestamps (2026-08-11), which carried
+#   a `try-app` step (`npm.cmd run app`) before it. See
+#   scripts/bugfix-lab/nitroai-guide-shell-sequence.ps1.
+#
+# mode = legacy  ->  the first attempt's single-command jobs, kept so their evidence can be
+#   re-run. They ask "does `npm.cmd run dist:win` itself hang", which is not what the
+#   reporters described.
+
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "today | v3 | legacy"
+        required: true
+        default: today
+        type: choice
+        options: [today, v3, legacy]
 
 jobs:
+  guide-shell-sequence:
+    if: inputs.mode != 'legacy'
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Environment
+        shell: pwsh
+        run: |
+          node --version
+          npm --version
+          git --version
+
+      - name: Run the guide in one PowerShell session (${{ inputs.mode }})
+        shell: pwsh
+        run: |
+          & .\scripts\bugfix-lab\nitroai-guide-shell-sequence.ps1 -Mode '${{ inputs.mode }}'
+          exit $LASTEXITCODE
+
   reproduce:
+    if: inputs.mode == 'legacy'
     strategy:
       fail-fast: false
       matrix:
@@ -24,10 +69,8 @@ jobs:
           .\scripts\bugfix-lab\nitroai-windows-electron-binary-download-stuck.ps1 -Mode ${{ matrix.mode }} -TimeoutSeconds 480 -PollSeconds 10
 
   negative-control:
-    # Proves the oracle is sensitive: reruns the step the Aug 11 2026
-    # reporters actually had (guide v4's 'try-app', `npm.cmd run app`),
-    # which publik commit c761358 (2026-08-19) removed. See
-    # scripts/bugfix-lab/nitroai-guide-v4-try-app-negative-control.ps1.
+    if: inputs.mode == 'legacy'
+    # The first attempt's sensitivity check: reruns `npm.cmd run app` on its own.
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
@@ -37,7 +80,7 @@ jobs:
         with:
           node-version: 22
 
-      - name: Run negative control (guide v4 try-app)
+      - name: Run negative control (try-app)
         shell: pwsh
         run: |
           .\scripts\bugfix-lab\nitroai-guide-v4-try-app-negative-control.ps1 -WaitSeconds 240
