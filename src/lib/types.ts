@@ -12,8 +12,10 @@ export type SourceKind =
   | "youtube"
   | "url";
 
-export type EngineMode = "local" | "cloud";
-export type Provider = "openai" | "anthropic";
+/* "publik" = the metered publik API, provisioned by the app itself;
+   "cloud" = the user's own key, unchanged. */
+export type EngineMode = "local" | "cloud" | "publik";
+export type Provider = "openai" | "anthropic" | "publik";
 
 /* ---- Notes & content ---------------------------------------------------- */
 
@@ -181,4 +183,6 @@ export interface EnginePrefs {
   cloudModel?: string;
   localModel?: string;
   language: string;
+  /* The publik API disclosure_version the user accepted; 0 = never shown. */
+  publikDisclosureAck?: number;
 }

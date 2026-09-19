@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUp, Paperclip, X } from "lucide-react";
 import { useApp } from "../lib/app";
+import { describeError, type ShownError } from "../lib/publik";
+import { ErrorNotice } from "./PublikNotice";
 import { chatAnswer } from "../lib/generation";
 import { ingest } from "../lib/ingest";
 import { renderMarkdown } from "../lib/markdown";
@@ -41,7 +43,7 @@ export default function Assistant({
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [err, setErr] = useState<ShownError | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -56,7 +58,7 @@ export default function Assistant({
     if (!question.trim() || busy) return;
     setErr(null);
     if (!engine) {
-      setErr("Set up your engine in Settings first (pick Local or add a key).");
+      setErr({ message: "Set up your engine in Settings first (pick publik API, Local, or add a key).", action: null });
       return;
     }
     /* The turn we store/show is what the user typed plus a chip line naming any
@@ -97,7 +99,7 @@ export default function Assistant({
       await repo?.putChat(asst);
       setTurns((t) => [...t, asst]);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : "Something went wrong.");
+      setErr(describeError(e));
     } finally {
       setStreaming(null);
       setBusy(false);
@@ -129,7 +131,7 @@ export default function Assistant({
             </p>
           </div>
           <div className="p-4">
-            {err && <p className="mb-2 text-xs font-semibold text-danger-ink">{err}</p>}
+            <ErrorNotice err={err} compact />
             <ChatInput onSend={send} busy={busy} />
           </div>
         </>
@@ -159,7 +161,7 @@ export default function Assistant({
             </div>
           </div>
           <div className={variant === "hero" ? "mx-auto w-full max-w-2xl px-8 pb-6" : "p-4"}>
-            {err && <p className="mb-2 text-xs font-semibold text-danger-ink">{err}</p>}
+            <ErrorNotice err={err} compact />
             <ChatInput onSend={send} busy={busy} />
           </div>
         </>

@@ -14,6 +14,9 @@ const { url } = await startServer({
   distDir: path.join(__dirname, "..", "dist"),
   binDir: path.join(__dirname, "..", "node_modules", ".cache", "nitroai"),
   port,
+  // `PUBLIK_APP_TOKEN=pat_… npm run serve` smokes the whole publik path
+  // (disclosure → mint → proxied chat) without a packaged build.
+  publik: { token: process.env.PUBLIK_APP_TOKEN ?? null, appVersion: "dev" },
 });
 
 console.log(`NitroAI server running at ${url}`);

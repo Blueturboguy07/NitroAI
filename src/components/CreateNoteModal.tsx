@@ -109,9 +109,19 @@ export default function CreateNoteModal({
               <div className="mb-3 flex items-start gap-2 rounded-xl border border-edge bg-panel px-3.5 py-3 text-xs text-ink-dim">
                 <Info className="mt-0.5 size-3.5 shrink-0 text-accent" />
                 <span>
-                  Local mode can't transcribe audio yet — there's no separate
-                  "Whisper" setting to connect. Add an OpenAI key in Settings and
-                  NitroAI uses OpenAI's Whisper API automatically for this.
+                  {engine?.provider === "publik" ? (
+                    <>
+                      publik API isn't carrying audio transcription for this install
+                      right now. Add your own OpenAI key in Settings for audio and
+                      YouTube-without-captions.
+                    </>
+                  ) : (
+                    <>
+                      Local mode can't transcribe audio yet — there's no separate
+                      "Whisper" setting to connect. Add an OpenAI key in Settings (or
+                      switch to publik API) and NitroAI transcribes automatically.
+                    </>
+                  )}
                 </span>
               </div>
             )}

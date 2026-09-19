@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 import { useApp } from "../lib/app";
 import { EngineError } from "../lib/engine/types";
+import { describeError, type ShownError } from "../lib/publik";
+import { ErrorNotice } from "./PublikNotice";
 import { contentFor, synthesizePodcastAudio, generatePodcastScript } from "../lib/generation";
 import type { Note, Podcast } from "../lib/types";
 
@@ -41,10 +43,10 @@ export default function PodcastPanel({ note }: { note: Note }) {
   const [length, setLength] = useState<Length>("short");
 
   const [generating, setGenerating] = useState(false);
-  const [scriptError, setScriptError] = useState<string | null>(null);
+  const [scriptError, setScriptError] = useState<ShownError | null>(null);
 
   const [audioGenerating, setAudioGenerating] = useState(false);
-  const [audioError, setAudioError] = useState<string | null>(null);
+  const [audioError, setAudioError] = useState<ShownError | null>(null);
 
   // Load the most recent podcast for this note whenever the note changes.
   useEffect(() => {
@@ -87,8 +89,8 @@ export default function PodcastPanel({ note }: { note: Note }) {
     } catch (e) {
       setScriptError(
         e instanceof EngineError
-          ? e.message
-          : "Something went wrong writing the script. Please try again.",
+          ? describeError(e)
+          : { message: "Something went wrong writing the script. Please try again.", action: null },
       );
     } finally {
       setGenerating(false);
@@ -111,8 +113,8 @@ export default function PodcastPanel({ note }: { note: Note }) {
     } catch (e) {
       setAudioError(
         e instanceof EngineError
-          ? e.message
-          : "Something went wrong recording the audio. Please try again.",
+          ? describeError(e)
+          : { message: "Something went wrong recording the audio. Please try again.", action: null },
       );
     } finally {
       setAudioGenerating(false);
@@ -210,9 +212,8 @@ export default function PodcastPanel({ note }: { note: Note }) {
             )}
 
             {scriptError && (
-              <div className="flex w-full items-start gap-2 rounded-xl bg-danger-soft px-4 py-3 text-sm text-danger-ink">
-                <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                <span>{scriptError}</span>
+              <div className="w-full">
+                <ErrorNotice err={scriptError} />
               </div>
             )}
           </div>
@@ -278,12 +279,7 @@ export default function PodcastPanel({ note }: { note: Note }) {
                       </button>
                     )}
 
-                    {audioError && (
-                      <div className="flex items-start gap-2 rounded-xl bg-danger-soft px-4 py-3 text-sm text-danger-ink">
-                        <AlertCircle className="mt-0.5 size-4 shrink-0" />
-                        <span>{audioError}</span>
-                      </div>
-                    )}
+                    <ErrorNotice err={audioError} />
 
                     {podcast.audioUrl && (
                       <div className="flex flex-col gap-3">

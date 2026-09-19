@@ -4,6 +4,7 @@
  *   GET  /api/youtube-extract?url= → yt-dlp captions/audio
  *   GET  /api/local/status         → Ollama provisioning state
  *   GET  /api/local/setup          → SSE stream that installs/starts/pulls Ollama
+ *   *    /api/publik/*              → publik API credential + streaming proxy (see publikProxy.mjs)
  *
  * Pure Node built-ins, no framework, so the packaged app stays small and has
  * no extra supply chain. Exported as startServer() so both the Electron main
@@ -16,6 +17,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractYoutube } from "./ytdlp.mjs";
 import { provision, status } from "./ollama.mjs";
+import { createPublikHandler } from "./publikProxy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -75,6 +77,8 @@ async function handleApi(req, res, url, opts) {
     return sendJson(res, 200, { ok: true, service: "nitroai" });
   }
 
+  if (await opts.publik(req, res, url)) return;
+
   if (p === "/api/youtube-extract") {
     const target = url.searchParams.get("url");
     if (!target) return sendJson(res, 400, { error: "missing url parameter" });
@@ -129,16 +133,30 @@ async function handleApi(req, res, url, opts) {
   return sendJson(res, 404, { error: "unknown endpoint" });
 }
 
+/* The desktop shell's preferred ports. Chromium keys localStorage and
+   IndexedDB by origin INCLUDING the port, so an OS-assigned port (0) would give
+   the renderer a fresh, empty origin on every launch — prefs, notes and the
+   BYO key gone. A fixed port keeps the origin stable across launches; the
+   small fallback range only matters when something else holds the first one
+   (then that launch lands on a different origin, which is the pre-existing
+   behaviour, not a regression). 0 is the last resort. */
+export const STABLE_PORTS = [41763, 41764, 41765, 41766, 41767, 41768, 41769, 41770, 41771, 41772, 0];
+
 /* Start the server. Returns { server, port, url }. `distDir` defaults to the
-   sibling dist/ (works in dev and when packaged with app.asar layout). */
-export function startServer({ distDir, binDir, port = 0, host = "127.0.0.1" } = {}) {
+   sibling dist/ (works in dev and when packaged with app.asar layout).
+   `ports` — try each candidate in order (EADDRINUSE → next); `port` is the
+   one-candidate shorthand. `publik` — { token, appVersion, credentialFile?,
+   baseUrl?, fetchImpl? } for the publik credential + proxy routes. */
+export function startServer({ distDir, binDir, port = 0, ports, host = "127.0.0.1", publik = {} } = {}) {
   const resolvedDist = distDir ?? path.join(__dirname, "..", "dist");
+  const candidates = Array.isArray(ports) && ports.length ? ports : [port];
+  const handlePublik = createPublikHandler(publik);
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${host}`);
     if (url.pathname.startsWith("/api/")) {
-      const appOrigin = `http://${host}:${server.address()?.port ?? port}`;
-      handleApi(req, res, url, { binDir, appOrigin }).catch((err) =>
+      const appOrigin = `http://${host}:${server.address()?.port ?? candidates[0]}`;
+      handleApi(req, res, url, { binDir, appOrigin, publik: handlePublik }).catch((err) =>
         sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" }),
       );
       return;
@@ -147,10 +165,20 @@ export function startServer({ distDir, binDir, port = 0, host = "127.0.0.1" } = 
   });
 
   return new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => {
-      const actualPort = server.address().port;
-      resolve({ server, port: actualPort, url: `http://${host}:${actualPort}` });
-    });
+    let i = 0;
+    const tryNext = () => {
+      const candidate = candidates[i++];
+      const onError = (err) => {
+        if (err?.code === "EADDRINUSE" && i < candidates.length) return tryNext();
+        reject(err);
+      };
+      server.once("error", onError);
+      server.listen(candidate, host, () => {
+        server.removeListener("error", onError);
+        const actualPort = server.address().port;
+        resolve({ server, port: actualPort, url: `http://${host}:${actualPort}` });
+      });
+    };
+    tryNext();
   });
 }

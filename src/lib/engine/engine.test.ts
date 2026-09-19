@@ -291,3 +291,223 @@ describe("createEngine", () => {
     expect(() => createEngine({ mode: "cloud", apiKey: "sk-x" })).toThrow(EngineError);
   });
 });
+
+/* ---- publik API through the local proxy ---------------------------------- */
+describe("OpenAIEngine as the publik provider", () => {
+  const publik = (extra: Parameters<typeof createEngine>[0] extends infer O ? Partial<O> : never = {}) =>
+    createEngine({ mode: "cloud", provider: "publik", ...extra });
+
+  it("complete() posts to the local proxy with the publik-fast alias and NO Authorization header", async () => {
+    const fetchMock = mockFetch(async () => streamResponse([`data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n\n`, "data: [DONE]\n\n"]));
+    vi.stubGlobal("fetch", fetchMock);
+    const text = await publik().complete({ messages: [{ role: "user", content: "hi" }] });
+    expect(text).toBe("hi");
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/publik/v1/chat/completions");
+    expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect(JSON.parse(init?.body as string).model).toBe("publik-fast");
+  });
+
+  it("tier strong → publik-balanced; credential model map and a pasted pk_ key are honoured", async () => {
+    const fetchMock = mockFetch(async () => streamResponse(["data: [DONE]\n\n"]));
+    vi.stubGlobal("fetch", fetchMock);
+    await publik().complete({ messages: [{ role: "user", content: "hi" }], tier: "strong" });
+    expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string).model).toBe("publik-balanced");
+
+    const custom = publik({ models: { fast: "publik-turbo", strong: "publik-mid" }, apiKey: "pk_test_c0m4o1z6s9x3_j5p8t1v4y7a0b3d6e9f2g5h8i1k4l7m0" });
+    await custom.complete({ messages: [{ role: "user", content: "hi" }], tier: "strong" });
+    expect(JSON.parse(fetchMock.mock.calls[1][1]?.body as string).model).toBe("publik-mid");
+    expect((fetchMock.mock.calls[1][1]?.headers as Record<string, string>).Authorization).toBe(
+      "Bearer pk_test_c0m4o1z6s9x3_j5p8t1v4y7a0b3d6e9f2g5h8i1k4l7m0",
+    );
+  });
+
+  it("the BYO OpenAI path is untouched (URL, model, bearer)", async () => {
+    const fetchMock = mockFetch(async () => streamResponse(["data: [DONE]\n\n"]));
+    vi.stubGlobal("fetch", fetchMock);
+    await createEngine({ mode: "cloud", provider: "openai", apiKey: "sk-test" }).complete({ messages: [{ role: "user", content: "hi" }] });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://api.openai.com/v1/chat/completions");
+    expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
+    expect(JSON.parse(init?.body as string).model).toBe("gpt-4o-mini");
+  });
+
+  it("402 insufficient_credit → EngineError kind credit with top_up_url and claim_state; never retried by resilient()", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch(async () =>
+        jsonResponse(
+          {
+            error: {
+              type: "insufficient_credit",
+              message: "Not enough publik credit for this request.",
+              available_micros: 1240,
+              required_micros: 41000,
+              claim_state: "anonymous",
+              top_up_url: "https://publikhq.com/claim/HK7F-2QWD",
+              claim_url: "https://publikhq.com/claim/HK7F-2QWD",
+              add_credit_url: "https://publikhq.com/dashboard/api/add",
+            },
+          },
+          402,
+        ),
+      ),
+    );
+    const { resilient } = await import("./resilient");
+    const engine = resilient(publik());
+    vi.useFakeTimers();
+    try {
+      const p = engine.complete({ messages: [{ role: "user", content: "hi" }] });
+      const settled = p.then(
+        () => "resolved",
+        (e) => e,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const e = await settled; // no 3 s backoff sleep was needed
+      expect(e).toMatchObject({
+        name: "EngineError",
+        kind: "credit",
+        detail: { topUpUrl: "https://publikhq.com/claim/HK7F-2QWD", claimState: "anonymous" },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1);
+  });
+
+  it("402 model_requires_claim and 429 daily_cap_reached / week_budget_reached → credit; 429 rate_limit_exceeded stays rate_limit", async () => {
+    const cases: Array<[number, Record<string, unknown>, string]> = [
+      [402, { type: "model_requires_claim", message: "claim first", top_up_url: "https://publikhq.com/claim/X" }, "credit"],
+      [429, { type: "daily_cap_reached", message: "cap" }, "credit"],
+      [429, { type: "week_budget_reached", message: "week" }, "credit"],
+      [429, { type: "rate_limit_exceeded", message: "slow down" }, "rate_limit"],
+    ];
+    for (const [status, error, kind] of cases) {
+      vi.stubGlobal("fetch", mockFetch(async () => new Response(JSON.stringify({ error }), { status, headers: { "retry-after": "120", "content-type": "application/json" } })));
+      await expect(publik().structured({ messages: [{ role: "user", content: "x" }], schema: {}, schemaName: "s" })).rejects.toMatchObject({ kind });
+    }
+    vi.stubGlobal("fetch", mockFetch(async () => new Response(JSON.stringify({ error: { type: "daily_cap_reached", message: "cap" } }), { status: 429, headers: { "retry-after": "120" } })));
+    await expect(publik().structured({ messages: [{ role: "user", content: "x" }], schema: {}, schemaName: "s" })).rejects.toMatchObject({ detail: { retryAfterSeconds: 120 } });
+  });
+
+  it("401 key_revoked → auth with detail.disconnected; 400 unknown_model → model_missing; 503 → network (retryable)", async () => {
+    vi.stubGlobal("fetch", mockFetch(async () => jsonResponse({ error: { type: "key_revoked", message: "removed", reprovision: false, disconnected: true } }, 401)));
+    await expect(publik().validate()).rejects.toMatchObject({ kind: "auth", detail: { disconnected: true } });
+    vi.stubGlobal("fetch", mockFetch(async () => jsonResponse({ error: { type: "unknown_model", message: "unknown model" } }, 400)));
+    await expect(publik().embed(["x"])).rejects.toMatchObject({ kind: "model_missing" });
+    vi.stubGlobal("fetch", mockFetch(async () => jsonResponse({ error: { type: "gateway_unavailable", message: "down" } }, 503)));
+    await expect(publik().embed(["x"])).rejects.toMatchObject({ kind: "network" });
+  });
+
+  it("x-publik-* headers on a non-stream call feed onUsage; a stream carries only the reservation and is marked streamed", async () => {
+    const seen: unknown[] = [];
+    const engine = publik({ onUsage: (u) => seen.push(u) });
+    vi.stubGlobal(
+      "fetch",
+      mockFetch(async () =>
+        new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), {
+          status: 200,
+          headers: {
+            "x-publik-model": "gpt-5.6-luna",
+            "x-publik-balance": "123456",
+            "x-publik-charge-micros": "150",
+            "x-publik-week-used": "1000",
+            "x-publik-week-budget": "none",
+            "x-publik-week-resets-at": "2026-09-25T17:04:11Z",
+            "x-publik-claim-state": "anonymous",
+            "x-publik-starter-remaining": "99000",
+          },
+        }),
+      ),
+    );
+    await engine.structured({ messages: [{ role: "user", content: "x" }], schema: {}, schemaName: "s" });
+    expect(seen[0]).toEqual({
+      streamed: false,
+      model: "gpt-5.6-luna",
+      balanceMicros: 123456,
+      chargeMicros: 150,
+      reservedMicros: undefined,
+      weekUsedMicros: 1000,
+      weekBudgetMicros: null,
+      weekResetsAt: "2026-09-25T17:04:11Z",
+      claimState: "anonymous",
+      starterRemainingMicros: 99000,
+    });
+
+    vi.stubGlobal("fetch", mockFetch(async () => new Response(streamResponse(["data: [DONE]\n\n"]).body, { status: 200, headers: { "x-publik-reserved-micros": "4100" } })));
+    await engine.complete({ messages: [{ role: "user", content: "x" }] });
+    expect(seen[1]).toMatchObject({ streamed: true, reservedMicros: 4100, balanceMicros: undefined, chargeMicros: undefined });
+
+    // The OpenAI path never fires it.
+    const openai = createEngine({ mode: "cloud", provider: "openai", apiKey: "sk-x", onUsage: (u) => seen.push(u) });
+    vi.stubGlobal("fetch", mockFetch(async () => jsonResponse({ choices: [{ message: { content: "{}" } }] })));
+    await openai.structured({ messages: [{ role: "user", content: "x" }], schema: {}, schemaName: "s" });
+    expect(seen).toHaveLength(2);
+  });
+
+  it("capabilities default to every line; a chat-only credential rejects audio/tts/embeddings before any fetch", async () => {
+    expect(publik().capabilities()).toEqual({ chat: true, transcription: true, tts: true, embeddings: true });
+    const fetchMock = mockFetch(async () => {
+      throw new Error("should not be called");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const chatOnly = publik({ capabilities: { chat: true, transcription: false, tts: false, embeddings: false } });
+    await expect(chatOnly.transcribe(new Blob(["a"]))).rejects.toMatchObject({ kind: "unsupported" });
+    await expect(chatOnly.tts("hi", { voice: "alloy" })).rejects.toMatchObject({ kind: "unsupported" });
+    await expect(chatOnly.embed(["hi"])).rejects.toMatchObject({ kind: "unsupported" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(chatOnly.transcribe(new Blob(["a"]))).rejects.toThrow(/publik API/);
+  });
+
+  it("transcribe() sends small audio whole via the proxy and chunks large audio into ≤4 MB WAV pieces with shifted segments", async () => {
+    const calls: Array<{ url: string; name: string; size: number; type: string }> = [];
+    let n = 0;
+    vi.stubGlobal(
+      "fetch",
+      mockFetch(async (url, init) => {
+        const form = init?.body as FormData;
+        const f = form.get("file") as File;
+        calls.push({ url: String(url), name: f.name, size: f.size, type: String(form.get("model")) });
+        n++;
+        return jsonResponse({ text: `part${n}`, language: "en", segments: [{ start: 0, end: 1, text: `part${n}` }] });
+      }),
+    );
+    const decode = async () => ({ sampleRate: 16_000, channels: [new Float32Array(16_000 * 300)] }); // 5 min mono 16 k
+    const engine = new OpenAIEngine("", undefined, { provider: "publik", baseUrl: "/api/publik/v1", audioDecoder: decode });
+
+    const small = await engine.transcribe(new Blob([new Uint8Array(1000)]));
+    expect(small.text).toBe("part1");
+    expect(calls[0]).toMatchObject({ url: "/api/publik/v1/audio/transcriptions", name: "audio.webm", size: 1000, type: "whisper-1" });
+
+    calls.length = 0;
+    const big = await engine.transcribe(new Blob([new Uint8Array(5 * 1024 * 1024)]));
+    expect(calls.length).toBeGreaterThan(1);
+    for (const c of calls) {
+      expect(c.size).toBeLessThanOrEqual(4 * 1024 * 1024);
+      expect(c.name).toMatch(/^chunk-\d+\.wav$/);
+    }
+    expect(big.text).toBe(calls.map((_, i) => `part${i + 2}`).join(" "));
+    expect(big.segments[0].start).toBe(0);
+    expect(big.segments[1].start).toBeGreaterThan(100); // shifted by the first chunk's length in seconds
+    expect(big.language).toBe("en");
+  });
+
+  it("tts() on publik tries tts-1 then tts-1-hd, never the OpenAI-only model", async () => {
+    const models: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      mockFetch(async (_url, init) => {
+        models.push(JSON.parse(init?.body as string).model);
+        return jsonResponse({ error: { type: "unknown_model", message: "nope" } }, 400);
+      }),
+    );
+    await expect(publik().tts("hi", { voice: "alloy" })).rejects.toMatchObject({ kind: "model_missing" });
+    expect(models).toEqual(["tts-1", "tts-1-hd"]);
+  });
+
+  it("createEngine needs no key for publik but still requires one for openai/anthropic", () => {
+    expect(createEngine({ mode: "cloud", provider: "publik" })).toBeInstanceOf(OpenAIEngine);
+    expect(createEngine({ mode: "cloud", provider: "publik" }).provider).toBe("publik");
+    expect(() => createEngine({ mode: "cloud", provider: "openai" })).toThrow(EngineError);
+  });
+});

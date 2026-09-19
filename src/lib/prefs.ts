@@ -12,6 +12,7 @@ const defaults: EnginePrefs = {
   cloudModel: "",
   localModel: "",
   language: "English",
+  publikDisclosureAck: 0,
 };
 
 export function getEnginePrefs(): EnginePrefs {

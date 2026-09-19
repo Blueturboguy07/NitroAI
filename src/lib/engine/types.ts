@@ -79,6 +79,20 @@ export interface Engine {
   validate(): Promise<void>;
 }
 
+/* Extra, provider-specific facts about an error the UI may act on. */
+export interface EngineErrorDetail {
+  /* publik API 402: the ONE link the app renders (claim page while anonymous,
+     add-credit page once claimed). */
+  topUpUrl?: string | null;
+  /* publik API "anonymous" | "claimed" — picks the button label. */
+  claimState?: string;
+  /* publik API 429 daily_cap_reached / week_budget_reached. */
+  retryAfterSeconds?: number;
+  /* publik API 401 key_revoked with reprovision:false — the install was
+     removed from the user's account; the app must not re-mint on its own. */
+  disconnected?: boolean;
+}
+
 /* Raised by engines for user-actionable failures (bad key, quota, model
    missing) so the UI can show a clean message instead of a stack trace. */
 export class EngineError extends Error {
@@ -91,7 +105,10 @@ export class EngineError extends Error {
       | "network"
       | "model_missing"
       | "unsupported"
+      /* publik API: out of credit or over a spend cap. Never retried. */
+      | "credit"
       | "unknown" = "unknown",
+    readonly detail: EngineErrorDetail = {},
   ) {
     super(message);
     this.name = "EngineError";
