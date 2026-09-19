@@ -1,0 +1,24 @@
+name: bugfix-lab (nitroai-windows-electron-binary-download-stuck)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reproduce:
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [clean, precondition]
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run oracle (${{ matrix.mode }})
+        shell: pwsh
+        run: |
+          .\scripts\bugfix-lab\nitroai-windows-electron-binary-download-stuck.ps1 -Mode ${{ matrix.mode }} -TimeoutSeconds 480 -PollSeconds 10
