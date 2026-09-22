@@ -164,7 +164,7 @@ describe("AnthropicEngine", () => {
     expect(headers["anthropic-version"]).toBe("2023-06-01");
     expect(headers["anthropic-dangerous-direct-browser-access"]).toBe("true");
     const body = JSON.parse(init?.body as string);
-    expect(body.model).toBe("claude-3-5-haiku-latest");
+    expect(body.model).toBe("claude-haiku-4-5-20251001");
     expect(body.system[0].text).toBe("Be terse.");
     expect(body.system[0].cache_control).toEqual({ type: "ephemeral" });
   });

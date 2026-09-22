@@ -21,6 +21,16 @@ import { EngineError } from "./types";
 const BASE_URL = "https://api.anthropic.com/v1";
 const API_VERSION = "2023-06-01";
 
+// claude-3-5-haiku-latest / claude-3-5-sonnet-latest were retired by
+// Anthropic (confirmed absent from GET /v1/models as of Sep 19 2026 — every
+// claude-2.x and claude-3.x id 404s with not_found_error) and are what this
+// file used to hardcode as its no-override "fast"/"strong" tier fallback,
+// which every generation call in src/lib/generation/index.ts (tier: "strong")
+// and every untiered call (tier undefined -> "fast") hits by default. Both
+// replacements below were live-verified with a real request before shipping.
+const FALLBACK_MODEL_FAST = "claude-haiku-4-5-20251001";
+const FALLBACK_MODEL_STRONG = "claude-sonnet-4-5-20250929";
+
 const UNSUPPORTED_MESSAGE =
   "Anthropic does not support this operation; use an OpenAI key or local models.";
 
@@ -143,7 +153,7 @@ export class AnthropicEngine implements Engine {
 
   private resolveModel(tier?: "fast" | "strong"): string {
     if (this.modelOverride) return this.modelOverride;
-    return tier === "strong" ? "claude-3-5-sonnet-latest" : "claude-3-5-haiku-latest";
+    return tier === "strong" ? FALLBACK_MODEL_STRONG : FALLBACK_MODEL_FAST;
   }
 
   private headers(): Record<string, string> {
