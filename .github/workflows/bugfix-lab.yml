@@ -13,4 +13,4 @@ jobs:
           node-version: 22
       - name: Run oracle
         shell: powershell
-        run: pwsh -File scripts/bugfix-lab/nitroai-windows-build-report-no-error-text.ps1
+        run: pwsh -File scripts/bugfix-lab/nitroai-windows-build-report-no-error-text-v2.ps1
