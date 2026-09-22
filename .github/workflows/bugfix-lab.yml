@@ -13,4 +13,9 @@ jobs:
           node-version: 22
       - name: Run oracle
         shell: powershell
-        run: pwsh -File scripts/bugfix-lab/nitroai-windows-build-report-no-error-text-v2.ps1
+        # FIX round 1 (2026-09-21): points at v3, which sources the "clone"
+        # step's command text from the FIXED publik guide (isMac-branched);
+        # v2 (still on disk, unmodified) carries the pre-fix literal for
+        # VERIFY lens A to toggle against by checking out this workflow file
+        # at the fix commit's parent.
+        run: pwsh -File scripts/bugfix-lab/nitroai-windows-build-report-no-error-text-v3.ps1
