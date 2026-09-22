@@ -1,0 +1,16 @@
+name: bugfix-lab
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  nitroai-windows-build-report-no-error-text:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run oracle
+        shell: powershell
+        run: pwsh -File scripts/bugfix-lab/nitroai-windows-build-report-no-error-text.ps1
