@@ -77,5 +77,6 @@ module.exports = {
   linux: {
     target: ["AppImage"],
     category: "Education",
+    artifactName: "NitroAI-Linux-x86_64.${ext}",
   },
 };

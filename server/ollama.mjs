@@ -94,10 +94,16 @@ async function fetchArchive(onLog) {
      /usr/local/bin     Homebrew on Intel, and the symlink Ollama.app offers to
                         create on first launch
      Ollama.app/Contents/Resources/ollama  the official app's own CLI, which is
-                        there even when the user declined that symlink */
+                        there even when the user declined that symlink
+     /usr/bin/ollama    where every Linux distro package puts it (pacman, apt,
+                        dnf). A packaged AppImage started from a desktop
+                        launcher gets the session PATH, but that is not
+                        guaranteed — and without this entry a machine with
+                        Ollama plainly installed reports "not installed",
+                        because none of the paths above exist on Linux. */
 function knownInstallPaths() {
   if (process.platform === "win32") return [];
-  const found = ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama"];
+  const found = ["/opt/homebrew/bin/ollama", "/usr/local/bin/ollama", "/usr/bin/ollama"];
   if (process.platform === "darwin") {
     for (const apps of ["/Applications", path.join(os.homedir(), "Applications")]) {
       found.push(path.join(apps, "Ollama.app", "Contents", "Resources", "ollama"));
