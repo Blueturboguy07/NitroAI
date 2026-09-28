@@ -76,6 +76,19 @@ describe("publik copy rule", () => {
     expect(why).not.toMatch(/OpenAI|Anthropic|Google|Gemini|GPT|Claude/);
   });
 
+  it("migration 0059: nothing promises free use on a new computer; the $0.05 link grant is written once, in publikCopy.ts", () => {
+    for (const f of [...publikFacing, path.join(root, "README.md")]) {
+      const text = fs.readFileSync(f, "utf8");
+      expect(text, f).not.toMatch(/free starter usage|starts with free|small free (starter )?balance|keeps? the free starter|no account (or key )?needed/i);
+    }
+    for (const f of publikFacing.filter((f) => !f.endsWith("publikCopy.ts"))) {
+      expect(fs.readFileSync(f, "utf8"), f).not.toMatch(/\$0\.05\b/);
+    }
+    const text = fs.readFileSync(path.join(root, "src/lib/publikCopy.ts"), "utf8");
+    expect(text).toContain('export const LINK_FREE_USE = "$0.05";');
+    expect(text).toContain("A new computer starts at $0.00 and no card is asked for");
+  });
+
   it("no page claims the key lives in the system keychain", () => {
     for (const f of walk(path.join(root, "src", "pages"))) {
       expect(fs.readFileSync(f, "utf8"), f).not.toMatch(/system keychain/i);

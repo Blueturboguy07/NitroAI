@@ -58,7 +58,11 @@ describe("publik helpers", () => {
     const claimed = describeError(new EngineError("$0.00 left.", "credit", { topUpUrl: "https://publikhq.com/dashboard/api/add", claimState: "claimed" }));
     expect(claimed.message).toBe("$0.00 left.");
     const blank = describeError(new EngineError("", "credit", { topUpUrl: "https://publikhq.com/claim/X", claimState: "anonymous" }));
-    expect(blank.message).toMatch(/^publik API needs a plan\./);
+    // Migration 0059: an unlinked install never had a starter, so the fallback never says "used up".
+    expect(blank.message).toBe(
+      "publik API has no balance on this computer. Link this computer to your publik account ($0.05 of free use, once), pick a plan, or use your own key.",
+    );
+    expect(blank.message).not.toMatch(/used up|free starter/i);
     expect(describeError(new EngineError("", "credit", { topUpUrl: "https://publikhq.com/dashboard/api/add", claimState: "claimed" })).message).toBe("publik API needs a plan or pack.");
     expect(describeError(new EngineError("removed", "auth", { disconnected: true })).message).toMatch(/publik API is disconnected/);
     expect(describeError(new EngineError("cap", "credit", { retryAfterSeconds: 60 })).message).toBe("cap");
@@ -84,7 +88,7 @@ describe("publik helpers", () => {
     resetBalance();
   });
 
-  it("starterIsLow(): below 20% of the server's grant while anonymous; never once claimed or without both numbers", () => {
+  it("starterIsLow(): below 20% of the server's grant while anonymous (an install minted before 0059); never once claimed, never at a $0.00 mint, never without both numbers", () => {
     resetBalance();
     statusToBalance({ available: true, state: "ready", baseUrl: "/api/publik/v1", starterMicros: 250_000, claimUrl: "https://publikhq.com/claim/X" });
     expect(getBalance()).toMatchObject({ starterMicros: 250_000, claimUrl: "https://publikhq.com/claim/X" });

@@ -1,20 +1,35 @@
 /* The first-run publik card (contract §12.1, founder 2026-09-19). Shown
    immediately after POST /installs succeeds — in onboarding and in Settings —
-   and never skipped: an install must not spend the starter without having
-   seen (a) the balance, (b) why it costs money and (c) the plan CTA.
+   and never skipped: an install must not spend a cent without having seen
+   (a) the balance, (b) why it costs money and (c) the plan CTA.
 
    Order is fixed: balance line → justification → primary "Link this computer
    & pick a plan" (opens claim_url; publikhq.com links only) → "Later", which
-   keeps the free starter and changes nothing else. */
+   changes nothing. Since migration 0059 a new computer starts at $0.00 and
+   its one free grant arrives when it is linked, so an unlinked $0.00 card
+   says that instead of "$0.00 of free use". */
 
 import { ExternalLink, Zap } from "lucide-react";
 import { dollars, openExternal, publikUrl, type PublikStatus } from "../lib/publik";
 import { cta, whyItCosts } from "../lib/publikCopy";
 
-export function starterLineFor(status: Pick<PublikStatus, "starterMicros" | "balanceMicros">): string {
-  const micros =
-    typeof status.starterMicros === "number" ? status.starterMicros : typeof status.balanceMicros === "number" ? status.balanceMicros : null;
-  return micros === null ? cta.starterUnknown : cta.starterLine(dollars(micros));
+type StarterFields = Pick<PublikStatus, "starterMicros" | "balanceMicros" | "claimUrl">;
+
+function starterMicrosOf(status: StarterFields): number | null {
+  return typeof status.starterMicros === "number" ? status.starterMicros : typeof status.balanceMicros === "number" ? status.balanceMicros : null;
+}
+
+/* The new-computer case: nothing to spend yet, and a claim link to offer. */
+export function unlinkedAtZero(status: StarterFields): boolean {
+  const micros = starterMicrosOf(status);
+  return micros !== null && micros <= 0 && publikUrl(status.claimUrl) !== null;
+}
+
+export function starterLineFor(status: StarterFields): string {
+  const micros = starterMicrosOf(status);
+  if (micros === null) return cta.starterUnknown;
+  if (micros > 0) return cta.starterLine(dollars(micros));
+  return unlinkedAtZero(status) ? cta.zeroStarterLine : cta.zeroBalanceLine;
 }
 
 export default function PublikWelcomeCard({
@@ -61,7 +76,7 @@ export default function PublikWelcomeCard({
           {cta.laterLabel}
         </button>
       </div>
-      <p className="mt-3 text-xs text-ink-faint">{cta.laterHint}</p>
+      <p className="mt-3 text-xs text-ink-faint">{unlinkedAtZero(status) ? cta.laterHintUnlinked : cta.laterHint}</p>
     </div>
   );
 }

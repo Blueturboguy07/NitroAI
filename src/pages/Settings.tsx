@@ -198,7 +198,7 @@ export default function Settings() {
                 </h2>
                 <p className="mt-1 text-sm text-ink-faint">
                   {publikOffered
-                    ? "Run on publik API (pay per use, no account needed), run everything locally for free, or bring your own API key."
+                    ? "Run on publik API (pay per use, no key of your own needed), run everything locally for free, or bring your own API key."
                     : "Run everything locally for free, or bring your own API key for cloud-quality output."}
                 </p>
               </div>

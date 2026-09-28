@@ -2,7 +2,9 @@
 /* Contract §12.3 / task item 3: a 402, or a starter below 20%, becomes a
    non-blocking banner with the message and exactly one link (top_up_url /
    claim_url). Off-publikhq.com links are dropped. Only shown while the
-   active engine is publik — BYO and local never see it. */
+   active engine is publik — BYO and local never see it.
+   Since migration 0059 a new install is minted at $0.00, so the low-starter
+   cases below model an install minted before 0059 (a $0.25 starter). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -18,7 +20,7 @@ function stubServer(status: Record<string, unknown>) {
     "fetch",
     vi.fn(async (url: string) => {
       if (url === "/api/publik/status") return json(status);
-      if (url === "/api/publik/wallet") return json({ balance_micros: 250_000, claim_state: "anonymous" });
+      if (url === "/api/publik/wallet") return json({ balance_micros: 0, claim_state: "anonymous" });
       return new Response("not found", { status: 404 });
     }),
   );
@@ -60,28 +62,30 @@ describe("bannerFor()", () => {
     expect(bannerFor({})).toBeNull();
   });
 
-  it("starter below 20% (both numbers from the server) → computed line + claim_url + the justification; not once claimed, not without a link", async () => {
+  it("starter below 20% (both numbers from the server; an install minted before 0059) → computed line + claim_url + the justification; not once claimed, not without a link", async () => {
     const { bannerFor } = await import("./PublikBanner");
     const low = bannerFor({ starterMicros: 250_000, starterRemainingMicros: 40_000, claimUrl: "https://publikhq.com/claim/X" });
     expect(low).toMatchObject({ key: "low-starter", url: "https://publikhq.com/claim/X", label: "Link this computer & pick a plan" });
-    expect(low!.message).toBe(`$0.04 of your $0.25 free starter usage is left. Link this computer and pick a plan to keep going. ${WHY}`);
+    expect(low!.message).toBe(`$0.04 of your $0.25 free use is left. Link this computer and pick a plan to keep going. ${WHY}`);
     expect(bannerFor({ starterMicros: 250_000, starterRemainingMicros: 60_000, claimUrl: "https://publikhq.com/claim/X" })).toBeNull();
     expect(bannerFor({ starterMicros: 250_000, starterRemainingMicros: 40_000, claimUrl: "https://publikhq.com/claim/X", claimState: "claimed" })).toBeNull();
     expect(bannerFor({ starterMicros: 250_000, starterRemainingMicros: 40_000 })).toBeNull();
     expect(bannerFor({ starterMicros: 250_000, starterRemainingMicros: 40_000, claimUrl: "https://evil.example/claim" })).toBeNull();
+    // A new install (migration 0059) starts at $0.00: no low-starter line; its first call's 402 is the banner.
+    expect(bannerFor({ starterMicros: 0, starterRemainingMicros: 0, balanceMicros: 0, claimState: "anonymous", claimUrl: "https://publikhq.com/claim/X" })).toBeNull();
   });
 });
 
 describe("<PublikBanner />", () => {
   it("a 402 reported through describeError() shows the server message with one link; Dismiss hides it", async () => {
     localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
-    stubServer({ available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 250_000 });
+    stubServer({ available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 0 });
     const open = vi.fn();
     vi.stubGlobal("open", open);
     await renderBanner();
     const { describeError, getBalance } = await import("../lib/publik");
     const { EngineError } = await import("../lib/engine/types");
-    await waitFor(() => expect(getBalance().starterMicros).toBe(250_000));
+    await waitFor(() => expect(getBalance().starterMicros).toBe(0));
     expect(screen.queryByTestId("publik-banner")).not.toBeInTheDocument();
 
     const msg = "Not enough publik credit for this request. Link this computer and pick a plan at the link below, or use your own key.";
@@ -99,7 +103,7 @@ describe("<PublikBanner />", () => {
     expect(screen.queryByTestId("publik-banner")).not.toBeInTheDocument();
   });
 
-  it("a starter below 20% shows the low-starter line with the claim link; a later usage header above 20% clears it", async () => {
+  it("a starter below 20% (an install minted before 0059) shows the low-starter line with the claim link; a later usage header above 20% clears it", async () => {
     localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
     stubServer({ available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 250_000 });
     await renderBanner();
@@ -107,7 +111,7 @@ describe("<PublikBanner />", () => {
     await waitFor(() => expect(getBalance().starterMicros).toBe(250_000));
     act(() => usageToBalance({ balanceMicros: 30_000, starterRemainingMicros: 30_000, claimState: "anonymous", streamed: false }));
     const banner = await screen.findByTestId("publik-banner");
-    expect(banner).toHaveTextContent("$0.03 of your $0.25 free starter usage is left.");
+    expect(banner).toHaveTextContent("$0.03 of your $0.25 free use is left.");
     expect(banner.querySelectorAll("button:not([aria-label])")).toHaveLength(1);
     expect(banner.textContent).not.toMatch(/\bcredits\b|OpenAI API access/i);
     act(() => usageToBalance({ balanceMicros: 200_000, starterRemainingMicros: 200_000, claimState: "anonymous", streamed: false }));
@@ -117,10 +121,10 @@ describe("<PublikBanner />", () => {
   it("never renders for a BYO or local engine, even with a notice in the store", async () => {
     localStorage.setItem("nitroai.apikey", "sk-user-key");
     localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "cloud", onboarded: true, language: "English" }));
-    stubServer({ available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/X", starterMicros: 250_000 });
+    stubServer({ available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/X", starterMicros: 0 });
     await renderBanner();
     const { setBalance } = await import("../lib/publik");
-    act(() => setBalance({ creditNotice: { message: "m", url: "https://publikhq.com/claim/X", at: 1 }, starterMicros: 250_000, starterRemainingMicros: 0, claimUrl: "https://publikhq.com/claim/X" }));
+    act(() => setBalance({ creditNotice: { message: "m", url: "https://publikhq.com/claim/X", at: 1 }, starterMicros: 0, starterRemainingMicros: 0, claimUrl: "https://publikhq.com/claim/X" }));
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByTestId("publik-banner")).not.toBeInTheDocument();
   });

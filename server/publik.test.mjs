@@ -43,10 +43,12 @@ function mint201(body, extra = {}) {
       claim_code: "HK7F-2QWD",
       claim_url: "https://publikhq.com/claim/HK7F-2QWD",
       claim_expires_at: "2026-10-18T17:04:11Z",
-      starter_micros: 250000,
-      balance_micros: 250000,
-      starting_credit_micros: 250000,
-      wallet: { balance_micros: 250000, claim_state: "anonymous" },
+      // Migration 0059: an unlinked install is minted at $0.00; the one free
+      // grant ($0.05 per publik account) arrives when the computer is linked.
+      starter_micros: 0,
+      balance_micros: 0,
+      starting_credit_micros: 0,
+      wallet: { balance_micros: 0, claim_state: "anonymous" },
       disclosure: { version: DISCLOSURE_VERSION, cost: "…", data_path: "…" },
       ...extra,
     },
@@ -123,7 +125,7 @@ describe("provision()", () => {
     expect(written.version).toBe(1);
     expect(written.base_url).toBe(gateway.url);
     expect(written.claim_url).toBe("https://publikhq.com/claim/HK7F-2QWD");
-    expect(written.starter_micros).toBe(250000);
+    expect(written.starter_micros).toBe(0);
     expect(written.models.balanced).toBe("publik-balanced");
     if (process.platform !== "win32") {
       expect(fs.statSync(file).mode & 0o777).toBe(0o600);
@@ -249,7 +251,8 @@ describe("credential helpers", () => {
       baseUrl: "/api/publik/v1",
       models: { fast: "publik-fast", balanced: "publik-balanced", smart: "publik-smart" },
       claimUrl: "https://publikhq.com/claim/HK7F-2QWD",
-      starterMicros: 250000,
+      // $0.00 stays a number (not null): the renderer tells "starts at $0.00" from "unknown".
+      starterMicros: 0,
     });
     expect(credentialForRenderer(null, { available: false })).toEqual({ available: false, state: "unprovisioned", baseUrl: "/api/publik/v1" });
   });

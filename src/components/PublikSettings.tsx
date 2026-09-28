@@ -134,6 +134,10 @@ export default function PublikSettings({
      "Manage plan" → the dashboard's API page. */
   const planUrl = anonymous ? linkUrl : PUBLIK_DASHBOARD_URL;
   const line = balanceLine(balance);
+  /* Migration 0059: a new computer starts at $0.00 and its one free grant
+     arrives when it is linked, so an unlinked $0.00 line says what linking
+     gives instead of a bare "$0.00 left". */
+  const zeroUnlinked = anonymous && balance.balanceMicros === 0 && linkUrl !== null;
 
   return (
     <div className="mt-5 rounded-xl border border-edge bg-panel p-4">
@@ -149,14 +153,17 @@ export default function PublikSettings({
             {unreachable
               ? copy.unreachable
               : line
-                ? `${line}${balance.stale ? " · updating…" : ""}`
-                : status.starterMicros != null
-                  ? cta.starterLine(dollars(status.starterMicros))
+                ? zeroUnlinked
+                  ? cta.zeroStarterLine
+                  : `${line}${balance.stale ? " · updating…" : ""}`
+                : (status.starterMicros ?? 0) > 0
+                  ? cta.starterLine(dollars(status.starterMicros!))
                   : "Balance loading…"}
           </p>
-          {!unreachable && anonymous && balance.starterRemainingMicros !== undefined && status.starterMicros != null && (
+          {/* Only an install minted before migration 0059 has an unlinked starter above $0.00. */}
+          {!unreachable && anonymous && balance.starterRemainingMicros !== undefined && (status.starterMicros ?? 0) > 0 && (
             <p className="mt-0.5 text-xs text-ink-faint">
-              {dollars(balance.starterRemainingMicros)} left of {cta.starterLine(dollars(status.starterMicros))}
+              {dollars(balance.starterRemainingMicros)} left of {cta.starterLine(dollars(status.starterMicros!))}
             </p>
           )}
           {balance.lastChargeMicros !== undefined && (

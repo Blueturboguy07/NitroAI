@@ -79,7 +79,7 @@ describe("Settings — publik API", () => {
     localStorage.setItem("nitroai.apikey", "sk-user-key-untouched");
     localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
     stubServer(
-      { available: true, state: "ready", baseUrl: "/api/publik/v1", models: { fast: "publik-fast", balanced: "publik-balanced" }, claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 250000 },
+      { available: true, state: "ready", baseUrl: "/api/publik/v1", models: { fast: "publik-fast", balanced: "publik-balanced" }, claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 0 },
       { balance_micros: 4_870_000, claim_state: "anonymous", week: { used_micros: 130_000, budget_micros: null, resets_at: "2026-09-25T17:04:11Z" }, claim_url: "https://publikhq.com/claim/HK7F-2QWD" },
     );
     await renderSettings();
@@ -93,14 +93,20 @@ describe("Settings — publik API", () => {
 
   it("contract §12.2: 'Pick a plan' opens claim_url while anonymous; the 'Why it costs money' toggle reveals the one justification sentence", async () => {
     localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
+    // Migration 0059: a new, unlinked computer is minted at $0.00.
     stubServer(
-      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 250000 },
-      { balance_micros: 250_000, claim_state: "anonymous", claim_url: "https://publikhq.com/claim/HK7F-2QWD" },
+      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 0 },
+      { balance_micros: 0, claim_state: "anonymous", claim_url: "https://publikhq.com/claim/HK7F-2QWD" },
     );
     const open = vi.fn();
     vi.stubGlobal("open", open);
     await renderSettings();
     const user = userEvent.setup();
+
+    // The $0.00 unlinked balance line says what linking gives — never "$0.00 left" alone or "$0.00 of free use".
+    const line = await screen.findByTestId("publik-balance-line");
+    await waitFor(() => expect(line).toHaveTextContent("$0.00 · link this computer for $0.05 of free use"));
+    expect(document.body.textContent).not.toMatch(/\$0\.00 of free|free starter/);
 
     await user.click(await screen.findByRole("button", { name: /^Pick a plan/ }));
     expect(open).toHaveBeenCalledWith("https://publikhq.com/claim/HK7F-2QWD", "_blank", "noopener");
@@ -120,7 +126,7 @@ describe("Settings — publik API", () => {
   it("contract §12.2: once claimed the button reads 'Manage plan' and opens the dashboard's API page", async () => {
     localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
     stubServer(
-      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 250000 },
+      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 0 },
       { balance_micros: 1_850_000, claim_state: "claimed", add_credit_url: "https://publikhq.com/dashboard/api/add", plan: { id: "basic", label: "Basic", monthly_micros: 8_000_000 } },
     );
     const open = vi.fn();
@@ -136,11 +142,14 @@ describe("Settings — publik API", () => {
   it("an off-publikhq.com claim link is dropped: no plan button rather than a foreign link", async () => {
     localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
     stubServer(
-      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://evil.example/claim/X", starterMicros: 250000 },
-      { balance_micros: 250_000, claim_state: "anonymous", claim_url: "https://evil.example/claim/X" },
+      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://evil.example/claim/X", starterMicros: 0 },
+      { balance_micros: 0, claim_state: "anonymous", claim_url: "https://evil.example/claim/X" },
     );
     await renderSettings();
     await screen.findByRole("button", { name: "Why it costs money" });
+    // No link to offer, so the $0.00 line does not promise one.
+    await waitFor(() => expect(screen.getByTestId("publik-balance-line")).toHaveTextContent("$0.00 left"));
+    expect(screen.getByTestId("publik-balance-line")).not.toHaveTextContent("link this computer");
     expect(screen.queryByRole("button", { name: /^Pick a plan/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Manage plan/ })).not.toBeInTheDocument();
   });
