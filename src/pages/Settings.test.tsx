@@ -154,6 +154,18 @@ describe("Settings — publik API", () => {
     expect(screen.queryByRole("button", { name: /^Manage plan/ })).not.toBeInTheDocument();
   });
 
+  it("an install minted before 0059 (old $0.25 starter) at $0.00 is not promised the $0.05 link grant: 0059 pays it nothing", async () => {
+    localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
+    stubServer(
+      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 250000 },
+      { balance_micros: 0, claim_state: "anonymous", claim_url: "https://publikhq.com/claim/HK7F-2QWD", starter: { remaining_micros: 0 } },
+    );
+    await renderSettings();
+    await waitFor(() => expect(screen.getByTestId("publik-balance-line")).toHaveTextContent("$0.00 left"));
+    expect(document.body.textContent).not.toMatch(/\$0\.05|link this computer for/);
+    expect(await screen.findByRole("button", { name: /^Pick a plan/ })).toBeInTheDocument();
+  });
+
   it("without a build token the publik pill is absent and the page reads as before", async () => {
     localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "local", onboarded: true, language: "English" }));
     stubServer({ available: false, state: "unprovisioned", baseUrl: "/api/publik/v1" });

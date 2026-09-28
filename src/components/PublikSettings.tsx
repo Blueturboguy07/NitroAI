@@ -136,8 +136,10 @@ export default function PublikSettings({
   const line = balanceLine(balance);
   /* Migration 0059: a new computer starts at $0.00 and its one free grant
      arrives when it is linked, so an unlinked $0.00 line says what linking
-     gives instead of a bare "$0.00 left". */
-  const zeroUnlinked = anonymous && balance.balanceMicros === 0 && linkUrl !== null;
+     gives instead of a bare "$0.00 left". An install minted before 0059 with
+     the old starter gets no link grant (0059 pays it nothing), so its $0.00
+     line stays "$0.00 left". */
+  const zeroUnlinked = anonymous && balance.balanceMicros === 0 && linkUrl !== null && (status.starterMicros ?? 0) <= 0;
 
   return (
     <div className="mt-5 rounded-xl border border-edge bg-panel p-4">
