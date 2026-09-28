@@ -50,8 +50,8 @@ function defaultRoute(req, res, raw) {
         base_url: gateway.url,
         models: { fast: "publik-fast", balanced: "publik-balanced", smart: "publik-smart" },
         claim_url: "https://publikhq.com/claim/HK7F-2QWD",
-        starter_micros: 250000,
-        balance_micros: 250000,
+        starter_micros: 0, // migration 0059: an unlinked install is minted at $0.00
+        balance_micros: 0,
       }),
     );
     return;
@@ -145,7 +145,7 @@ describe("publik routes", () => {
       body: JSON.stringify({ disclosure_version: DISCLOSURE_VERSION }),
     });
     const s = await res.json();
-    expect(s).toMatchObject({ ok: true, minted: true, state: "ready", starterMicros: 250000, claimUrl: "https://publikhq.com/claim/HK7F-2QWD" });
+    expect(s).toMatchObject({ ok: true, minted: true, state: "ready", starterMicros: 0, claimUrl: "https://publikhq.com/claim/HK7F-2QWD" });
     expect(JSON.stringify(s)).not.toContain("pk_");
     expect(readCredentialFile(file).key).toBe(KEY);
     expect(JSON.parse(gateway.requests.find((r) => r.url === "/installs").text).disclosure_version).toBe(DISCLOSURE_VERSION);

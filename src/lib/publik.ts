@@ -205,7 +205,11 @@ export function clearCreditNotice(): void {
 }
 
 /* The starter is "low" below 20% of the grant while the install is still
-   anonymous (contract §12; task item 3). Both numbers come from the server. */
+   anonymous (contract §12; task item 3). Both numbers come from the server.
+   Since migration 0059 a new install is minted at $0.00 (starterMicros 0) and
+   the one free grant lands at link time, when the install is already
+   claimed, so this fires only for an install minted before 0059 that still
+   has part of its old starter. */
 export const LOW_STARTER_FRACTION = 0.2;
 export function starterIsLow(b: PublikBalance): boolean {
   if ((b.claimState ?? "anonymous") === "claimed") return false;

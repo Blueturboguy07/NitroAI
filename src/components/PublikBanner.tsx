@@ -2,6 +2,8 @@
    time, each with the message and EXACTLY ONE link:
      - a 402 arrived → the gateway's own message + top_up_url
      - the starter is below 20% while anonymous → a computed line + claim_url
+       (only an install minted before migration 0059 can hit this: a new one
+       starts at $0.00, and its first call answers 402, the first trigger)
    Dismissable; the 402 notice also clears itself on the next successful
    metered call. Only rendered while the active engine is publik. */
 

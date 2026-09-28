@@ -56,13 +56,14 @@ const WHY =
 
 describe("Onboarding — first-run card after the mint (contract §12)", () => {
   it("shows the balance from the mint reply, the justification, and a primary CTA that opens the reply's claim_url", async () => {
+    // Migration 0059: a new, unlinked computer is minted at $0.00.
     const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" }, () => ({
       ok: true,
       minted: true,
       ...READY,
       claimUrl: "https://publikhq.com/claim/HK7F-2QWD",
-      starterMicros: 250_000,
-      balanceMicros: 250_000,
+      starterMicros: 0,
+      balanceMicros: 0,
     }));
     const open = vi.fn();
     vi.stubGlobal("open", open);
@@ -72,10 +73,13 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
 
     const card = await screen.findByTestId("publik-welcome-card");
     // (a) balance line from the response, (b) the one sentence, (c) the primary button — in that order.
-    expect(screen.getByTestId("publik-starter-line")).toHaveTextContent("$0.25 of free starter usage");
+    // A $0.00 unlinked balance says what linking gives — never "$0.00 of free use".
+    expect(screen.getByTestId("publik-starter-line")).toHaveTextContent("$0.00 · link this computer for $0.05 of free use");
+    expect(card.textContent).not.toMatch(/\$0\.00 of free|free starter/);
+    expect(card).toHaveTextContent("At $0.00, publik API can't answer requests.");
     expect(card).toHaveTextContent(WHY);
     const primary = screen.getByRole("button", { name: /^Link this computer & pick a plan/ });
-    expect(card.textContent!.indexOf("$0.25 of free starter usage")).toBeLessThan(card.textContent!.indexOf("A provider charges"));
+    expect(card.textContent!.indexOf("$0.00 · link this computer")).toBeLessThan(card.textContent!.indexOf("A provider charges"));
     expect(card.textContent!.indexOf("A provider charges")).toBeLessThan(card.textContent!.indexOf("Link this computer & pick a plan"));
     // Copy rule (contract §1): dollars, never "credits", never "OpenAI API access".
     expect(card.textContent).not.toMatch(/\bcredits\b|OpenAI API access|ChatGPT credits/i);
@@ -88,7 +92,7 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
     expect(calls.filter((c) => c.url === "/api/publik/provision")).toHaveLength(1);
   });
 
-  it("renders whatever starter amount the server sent — never a fixed figure", async () => {
+  it("a starter above $0.00 (a mint bound to an account) renders whatever amount the server sent — never a fixed figure", async () => {
     stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" }, () => ({
       ok: true,
       minted: true,
@@ -99,7 +103,8 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
     await renderOnboarding();
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
-    expect(await screen.findByTestId("publik-starter-line")).toHaveTextContent("$1.00 of free starter usage");
+    expect(await screen.findByTestId("publik-starter-line")).toHaveTextContent("$1.00 of free use");
+    expect(screen.getByTestId("publik-welcome-card")).toHaveTextContent("Pick a plan any time in Settings.");
   });
 
   it("a claim_url off publikhq.com is dropped: no primary button, 'Later' still works", async () => {
@@ -108,7 +113,7 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
       minted: true,
       ...READY,
       claimUrl: "https://evil.example/claim/HK7F-2QWD",
-      starterMicros: 250_000,
+      starterMicros: 0,
     }));
     const open = vi.fn();
     vi.stubGlobal("open", open);
@@ -116,6 +121,8 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
     await screen.findByTestId("publik-welcome-card");
+    // No link to offer, so the $0.00 line promises nothing about linking.
+    expect(screen.getByTestId("publik-starter-line")).toHaveTextContent("Your balance starts at $0.00.");
     expect(screen.queryByRole("button", { name: /Link this computer & pick a plan/ })).not.toBeInTheDocument();
     expect(document.body.innerHTML).not.toContain("evil.example");
     await user.click(screen.getByRole("button", { name: "Later" }));
@@ -123,14 +130,14 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
     expect(open).not.toHaveBeenCalled();
   });
 
-  it("'Later' keeps the free starter: the credential stays, the user's own key is untouched, nothing is forgotten or re-minted", async () => {
+  it("'Later' changes nothing: the credential stays, the user's own key is untouched, nothing is forgotten or re-minted", async () => {
     localStorage.setItem("nitroai.apikey", "sk-user-key-untouched");
     const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" }, () => ({
       ok: true,
       minted: true,
       ...READY,
       claimUrl: "https://publikhq.com/claim/HK7F-2QWD",
-      starterMicros: 250_000,
+      starterMicros: 0,
     }));
     const open = vi.fn();
     vi.stubGlobal("open", open);
