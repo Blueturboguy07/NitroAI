@@ -38,7 +38,9 @@ const NO_SERVER: PublikStatus = { available: false, state: "unprovisioned", base
 
 async function call(path: string, init?: RequestInit, timeoutMs = 12_000): Promise<PublikStatus> {
   try {
-    const res = await fetch(path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    const headers = new Headers(init?.headers);
+    headers.set("X-NitroAI", "1"); // the local server refuses /api/* calls without it
+    const res = await fetch(path, { ...init, headers, signal: AbortSignal.timeout(timeoutMs) });
     if (!(res.headers.get("content-type") ?? "").includes("application/json")) return NO_SERVER;
     return (await res.json()) as PublikStatus;
   } catch {
@@ -87,7 +89,7 @@ export interface PublikWallet {
 
 export async function fetchPublikWallet(): Promise<PublikWallet | null> {
   try {
-    const res = await fetch("/api/publik/wallet", { signal: AbortSignal.timeout(6000) });
+    const res = await fetch("/api/publik/wallet", { headers: { "X-NitroAI": "1" }, signal: AbortSignal.timeout(6000) });
     if (!res.ok || !(res.headers.get("content-type") ?? "").includes("application/json")) return null;
     const w = (await res.json()) as PublikWallet;
     if (typeof w.balance_micros !== "number") return null;
@@ -246,14 +248,17 @@ export function balanceLine(b: PublikBalance): string {
 }
 
 /* Capability bits: the gateway carries every line (contract §3.1); an
-   optional per-install `lines` list can narrow them without an app release. */
+   optional per-install `lines` list can narrow them without an app release.
+   Vision (reading scanned pages as images) rides on the chat line — image
+   parts are just chat content — unless the list names it explicitly. */
 export function linesToCapabilities(lines: string[] | null | undefined): EngineCapabilities {
-  if (!Array.isArray(lines)) return { chat: true, transcription: true, tts: true, embeddings: true };
+  if (!Array.isArray(lines)) return { chat: true, transcription: true, tts: true, embeddings: true, vision: true };
   return {
     chat: lines.includes("chat"),
     transcription: lines.includes("audio") || lines.includes("transcription"),
     tts: lines.includes("tts") || lines.includes("speech"),
     embeddings: lines.includes("embeddings"),
+    vision: lines.includes("chat") || lines.includes("vision"),
   };
 }
 
@@ -308,6 +313,8 @@ export function openExternal(url: string): void {
 export interface ShownError {
   message: string;
   action: CreditAction | null;
+  /* Optional per-item lines under the message (e.g. each file that failed). */
+  details?: string[];
 }
 
 export function describeError(e: unknown, fallback = "Something went wrong."): ShownError {

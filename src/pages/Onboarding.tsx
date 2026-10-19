@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Cloud, Cpu, KeyRound, PenLine, Zap } from "lucide-react";
-import { detectProvider, saveApiKey } from "../lib/engine/keys";
+import { detectProvider, PROVIDER_LABELS, resolveProvider, saveApiKey } from "../lib/engine/keys";
+import { createEngine } from "../lib/engine";
 import { getEnginePrefs } from "../lib/prefs";
 import { localSetupStatus } from "../lib/localSetup";
 import { fetchPublikStatus, provisionPublik, type PublikStatus } from "../lib/publik";
@@ -10,7 +11,7 @@ import LocalSetupModal from "../components/LocalSetupModal";
 import { PublikDisclosure } from "../components/PublikNotice";
 import PublikWelcomeCard from "../components/PublikWelcome";
 import { useApp } from "../lib/app";
-import type { EngineMode } from "../lib/types";
+import type { EngineMode, EnginePrefs, Provider } from "../lib/types";
 
 function provisionFailureText(reason: string | null | undefined): string {
   switch (reason) {
@@ -37,6 +38,10 @@ export default function Onboarding() {
   const [publik, setPublik] = useState<PublikStatus | null>(null);
   const [mode, setMode] = useState<EngineMode | null>(null);
   const [apiKey, setApiKey] = useState("");
+  /* "" = detect from the key's prefix. Shown whenever a key is typed, so a
+     key in a format NitroAI doesn't know yet never leaves the user stuck. */
+  const [providerChoice, setProviderChoice] = useState<Provider | "">("");
+  const [keyError, setKeyError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [publikError, setPublikError] = useState<string | null>(null);
   /* The provision reply, once POST /installs succeeded. While set, the page
@@ -44,7 +49,8 @@ export default function Onboarding() {
      the balance, the justification and the plan CTA were shown. */
   const [provisioned, setProvisioned] = useState<PublikStatus | null>(null);
   const [setupOpen, setSetupOpen] = useState(false);
-  const provider = detectProvider(apiKey.trim());
+  const detected = detectProvider(apiKey.trim());
+  const provider = resolveProvider(apiKey.trim(), providerChoice);
   const ready = mode === "local" || (mode === "cloud" && provider !== null);
   const publikOffered = publik?.available === true;
 
@@ -60,10 +66,11 @@ export default function Onboarding() {
     };
   }, []);
 
-  function enter(nextMode: EngineMode, chatModel?: string) {
+  function enter(nextMode: EngineMode, chatModel?: string, extra: Partial<EnginePrefs> = {}) {
     const prefs = getEnginePrefs();
     savePrefs({
       ...prefs,
+      ...extra,
       mode: nextMode,
       onboarded: true,
       // Persist which local model is actually in use, so future launches (and
@@ -97,8 +104,18 @@ export default function Onboarding() {
     if (!mode || busy) return;
     setBusy(true);
     if (mode === "cloud") {
+      // Check the key before entering the app, so a wrong or mistyped key
+      // shows up here rather than as a failure on the first note.
+      setKeyError(null);
+      try {
+        await createEngine({ mode: "cloud", provider: provider!, apiKey: apiKey.trim() }).validate();
+      } catch (e) {
+        setKeyError(e instanceof Error ? e.message : "Couldn't validate this key.");
+        setBusy(false);
+        return;
+      }
       await saveApiKey(apiKey.trim());
-      enter("cloud");
+      enter("cloud", undefined, { cloudProvider: providerChoice });
       return;
     }
     // Local: provision Ollama first IF a setup server is present and not already
@@ -167,7 +184,7 @@ export default function Onboarding() {
           onClick={() => setMode("cloud")}
           icon={Cloud}
           title={publikOffered ? "Use my own key" : "Bring your own key"}
-          body="Use your OpenAI or Anthropic key for the highest-quality notes, quizzes, chat, and voices. You pay your provider directly — no NitroAI subscription, ever."
+          body="Use your OpenAI, Google Gemini or Anthropic key for the highest-quality notes, quizzes, chat, and voices. You pay your provider directly — no NitroAI subscription, ever."
         />
       </div>
 
@@ -193,18 +210,45 @@ export default function Onboarding() {
               autoFocus
               type="password"
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="sk-... or sk-ant-..."
+              onChange={(e) => {
+                setApiKey(e.target.value);
+                setKeyError(null);
+              }}
+              placeholder="sk-… (OpenAI), AQ.… or AIza… (Google Gemini), sk-ant-… (Anthropic)"
               className="w-full bg-transparent text-sm outline-none placeholder:text-ink-faint"
             />
             {provider && (
               <span className="shrink-0 rounded-full bg-accent-softer px-3 py-1 text-xs font-bold text-accent">
-                {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : "OpenAI"}
+                {PROVIDER_LABELS[provider]}
               </span>
             )}
           </div>
+          {apiKey.trim() && (
+            <label className="mt-3 flex items-center gap-2">
+              <span className="text-sm font-semibold text-ink-dim">
+                {detected || providerChoice ? "Provider" : "Which company is this key from?"}
+              </span>
+              <select
+                value={providerChoice}
+                onChange={(e) => {
+                  setProviderChoice(e.target.value as Provider | "");
+                  setKeyError(null);
+                }}
+                className="min-w-0 rounded-lg border border-edge bg-card px-2 py-1.5 text-sm font-semibold outline-none focus:border-accent"
+              >
+                <option value="">{detected ? `Auto-detect (${PROVIDER_LABELS[detected]})` : "Choose…"}</option>
+                {(["openai", "gemini", "anthropic", "publik"] as const).map((p) => (
+                  <option key={p} value={p}>
+                    {PROVIDER_LABELS[p]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {keyError && <p className="mt-2 text-sm font-semibold text-danger-ink">{keyError}</p>}
           <p className="mt-2 text-xs text-ink-faint">
-            Stored only on this computer. One key powers every feature.
+            Stored only on this computer. One key powers every feature. No Gemini key yet? Get a
+            free one at aistudio.google.com/apikey. You can pick the exact models later in Settings.
           </p>
         </div>
       )}
@@ -219,7 +263,7 @@ export default function Onboarding() {
               : "cursor-not-allowed bg-accent-softer text-ink-faint"
           }`}
         >
-          {busy ? "Setting up…" : "Get started"}
+          {busy ? (mode === "cloud" ? "Checking your key…" : "Setting up…") : "Get started"}
         </button>
       )}
 

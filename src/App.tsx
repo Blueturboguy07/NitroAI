@@ -6,6 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 import NoteView from "./pages/NoteView";
 import Onboarding from "./pages/Onboarding";
+import SampleQuiz from "./pages/SampleQuiz";
 import { useApp } from "./lib/app";
 
 export default function App() {
@@ -33,6 +34,7 @@ export default function App() {
           <Route path="/onboarding" element={<Onboarding />} />
           <Route element={<AppShell />}>
             <Route path="/" element={<Dashboard />} />
+            <Route path="/quiz" element={<SampleQuiz />} />
             <Route path="/settings" element={<Settings />} />
           </Route>
           <Route path="/notes/:id" element={<Navigate to="editor" replace />} />

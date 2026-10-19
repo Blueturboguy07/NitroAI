@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { capTokens, chunkByTokens, estimateTokens } from "./chunk";
+import { capTokens, chunkByTokens, estimateTokens, lessonBudgets } from "./chunk";
 
 describe("chunk utilities", () => {
   it("estimateTokens uses ~chars/4", () => {
@@ -35,5 +35,27 @@ describe("chunk utilities", () => {
 
   it("returns nothing for empty input", () => {
     expect(chunkByTokens("   ", 100)).toEqual([]);
+  });
+});
+
+describe("lessonBudgets", () => {
+  it("sends every lesson whole when they all fit", () => {
+    expect(lessonBudgets([100, 9000], 12000)).toEqual([100, 9000]);
+  });
+
+  it("keeps short lessons whole and splits what's left among the long ones", () => {
+    expect(lessonBudgets([20000, 100, 30000], 12000)).toEqual([5950, 100, 5950]);
+  });
+
+  it("never goes over the shared budget, whatever the mix", () => {
+    const sizes = [7, 1234, 50, 99999, 3000, 0, 640];
+    const caps = lessonBudgets(sizes, 4000);
+    expect(caps.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(4000);
+    caps.forEach((c, i) => expect(c).toBeLessThanOrEqual(sizes[i]));
+    expect(caps[5]).toBe(0);
+  });
+
+  it("handles no lessons", () => {
+    expect(lessonBudgets([], 12000)).toEqual([]);
   });
 });

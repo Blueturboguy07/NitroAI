@@ -7,6 +7,7 @@
 import type {
   Engine,
   CompletionOptions,
+  DocumentPart,
   StructuredOptions,
   TokenHandler,
   TranscriptResult,
@@ -65,5 +66,11 @@ export function resilient(engine: Engine): Engine {
     embed: (texts: string[], signal?: AbortSignal) =>
       withBackoff(() => engine.embed(texts, signal), signal),
     validate: () => engine.validate(),
+    /* Optional method: forwarded only when the wrapped engine has it, so
+       supportsTask(…, "vision") still sees through the wrapper. */
+    ...(engine.readDocument && {
+      readDocument: (parts: DocumentPart[], signal?: AbortSignal) =>
+        withBackoff(() => engine.readDocument!(parts, signal), signal),
+    }),
   };
 }

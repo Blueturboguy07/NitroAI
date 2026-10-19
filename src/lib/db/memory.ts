@@ -53,5 +53,22 @@ export function memoryStore(): Store {
     async clear(collection: string): Promise<void> {
       tableFor(collection).clear();
     },
+
+    async replaceWhere<T extends { id: string }>(
+      collection: string,
+      match: Partial<T>,
+      values: T[],
+    ): Promise<void> {
+      // Synchronous body = atomic with respect to every other call.
+      const entries = Object.entries(match as Record<string, unknown>);
+      const clones = values.map((v) => structuredClone(v));
+      const table = tableFor(collection);
+      for (const [id, v] of Array.from(table.entries())) {
+        if (entries.every(([key, val]) => (v as Record<string, unknown>)[key] === val)) {
+          table.delete(id);
+        }
+      }
+      for (const c of clones) table.set(c.id, c);
+    },
   };
 }

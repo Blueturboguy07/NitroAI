@@ -48,11 +48,31 @@ export interface TtsOptions {
   signal?: AbortSignal;
 }
 
+/* One entry in a provider's model list (Settings → model picker). */
+export interface ModelInfo {
+  id: string;
+  label?: string;
+}
+
 export interface EngineCapabilities {
   chat: boolean;
   transcription: boolean;
   tts: boolean;
   embeddings: boolean;
+  /* Can read page images through readDocument() — the OCR fallback for
+     scanned PDFs and image-only DOCX. Optional so engines (and test fakes)
+     that predate it read as "no". */
+  vision?: boolean;
+  /* readDocument() also takes a whole PDF as-is (Gemini, Anthropic), so its
+     pages needn't be rendered to images first. */
+  visionPdf?: boolean;
+}
+
+/* One input to readDocument(): a page image (image/png, image/jpeg…) or, on
+   engines with `visionPdf`, a whole PDF (application/pdf). */
+export interface DocumentPart {
+  mimeType: string;
+  data: Blob;
 }
 
 export interface Engine {
@@ -74,6 +94,12 @@ export interface Engine {
 
   /* Vector embeddings for RAG. */
   embed(texts: string[], signal?: AbortSignal): Promise<number[][]>;
+
+  /* Read document pages visually and return their text in reading order.
+     Used when text extraction finds nothing (scanned PDFs, slides exported
+     as images). Present only on engines whose capabilities().vision is true;
+     check with supportsTask(engine, "vision"). */
+  readDocument?(parts: DocumentPart[], signal?: AbortSignal): Promise<string>;
 
   /* Cheap liveness/credentials check. Throws on failure. */
   validate(): Promise<void>;

@@ -1,12 +1,24 @@
 /* Shared publik API surfaces: the first-run disclosure sheet (R21 §4.3) and
    the error notice that renders a message plus — for a 402 — exactly one
-   link, top_up_url (contract §1). */
+   link, top_up_url (contract §1). The notice also takes optional extra
+   buttons (`children`, e.g. Retry) and a dismiss ✕. */
 
-import { AlertCircle, ExternalLink, Zap } from "lucide-react";
+import type { ReactNode } from "react";
+import { AlertCircle, ExternalLink, X, Zap } from "lucide-react";
 import { openExternal, type ShownError } from "../lib/publik";
 import { disclosure, PUBLIK_TERMS_URL } from "../lib/publikCopy";
 
-export function ErrorNotice({ err, compact = false }: { err: ShownError | null; compact?: boolean }) {
+export function ErrorNotice({
+  err,
+  compact = false,
+  onDismiss,
+  children,
+}: {
+  err: ShownError | null;
+  compact?: boolean;
+  onDismiss?: () => void;
+  children?: ReactNode;
+}) {
   if (!err) return null;
   return (
     <div
@@ -18,7 +30,16 @@ export function ErrorNotice({ err, compact = false }: { err: ShownError | null; 
       }
     >
       {!compact && <AlertCircle className="size-4 shrink-0" />}
-      <span className="min-w-0 flex-1">{err.message}</span>
+      <span className="min-w-0 flex-1">
+        {err.message}
+        {err.details && err.details.length > 0 && (
+          <ul className="mt-1.5 list-disc space-y-0.5 pl-5 font-normal">
+            {err.details.map((d, i) => (
+              <li key={i}>{d}</li>
+            ))}
+          </ul>
+        )}
+      </span>
       {err.action && (
         <button
           type="button"
@@ -27,6 +48,17 @@ export function ErrorNotice({ err, compact = false }: { err: ShownError | null; 
         >
           {err.action.label}
           <ExternalLink className="size-3" />
+        </button>
+      )}
+      {children}
+      {onDismiss && (
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="shrink-0 rounded-lg p-1 text-danger-ink/70 hover:bg-danger-ink/10 hover:text-danger-ink"
+        >
+          <X className="size-4" />
         </button>
       )}
     </div>

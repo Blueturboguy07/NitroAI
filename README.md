@@ -25,7 +25,7 @@
 
 ---
 
-NitroAI is an open-source, local-first study app. Point it at a document, a website, a YouTube link, or an audio file and it generates clean notes (with math), spaced-repetition flashcards, quizzes, and a chat that knows your material. Out of the box it runs on **publik API** — pay per use, no key of your own needed; linking the computer to your publik account gives $0.05 of free use, once. You can also run it **fully locally** (no account, no cloud, nothing leaves your machine) or **bring your own** OpenAI / Anthropic key. There is no NitroAI subscription: publik API is pay-per-use, your own key is billed by your provider, and local is free.
+NitroAI is an open-source, local-first study app. Point it at a document, a website, a YouTube link, or an audio file and it generates clean notes (with math), spaced-repetition flashcards, quizzes, and a chat that knows your material. Out of the box it runs on **publik API** — pay per use, no key of your own needed; linking the computer to your publik account gives $0.05 of free use, once. You can also run it **fully locally** (no account, no cloud, nothing leaves your machine) or **bring your own** OpenAI / Google Gemini / Anthropic key — and pick exactly which model runs. There is no NitroAI subscription: publik API is pay-per-use, your own key is billed by your provider, and local is free.
 
 > [!IMPORTANT]
 > **This is a starting point, not a finished product.** It's an open-source foundation meant to be forked, extended, and improved. It works and it's genuinely useful, but expect rough edges — treat it as a solid base to build on rather than a polished commercial app.
@@ -54,7 +54,9 @@ You pick one on first launch (and can switch any time in Settings):
 
 - **publik API** (default in the packaged builds) — NitroAI sets itself up on first launch, after you accept a short disclosure. Every request is priced per use at 50% of the model's published list price; audio transcription, podcast voices and embeddings are passed through at cost. Most people spend under $2 a month. A new computer starts at $0.00 and no card is asked for: linking it to your publik account gives $0.05 of free use, once per account, and a plan, a pack or your own key takes it from there. Right after setup the app shows your balance and why it costs money, with a button to link the computer and pick a plan (you can also do that later from Settings). Until you link, add a plan or pack, or paste your own key, every publik API request answers 402 and the app shows the link button instead. Your prompts go through publik's servers to a shared model account; publik does not keep them after the reply and never trains on them. The install's key lives in `~/Library/Application Support/publik/apps/nitroai.json` (mac) / `%LOCALAPPDATA%\publik\apps\nitroai.json` (Windows), readable only by you, and never leaves the app's local server. Builds without a publik app token (forks, `npm run app` without `PUBLIK_APP_TOKEN`) simply don't offer this option.
 - **Fully local** — when you choose this, NitroAI automatically downloads and starts a local AI runtime ([Ollama](https://ollama.com)) and pulls a small, capable model (~2 GB, one time). Everything then runs on your device: no key, no cloud, no cost. *Provisioning only ever happens if you pick local — cloud users never download a model.*
-- **Use my own key** — paste an OpenAI (`sk-…`), Anthropic (`sk-ant-…`) or publik (`pk_…`) key for the highest-quality notes, quizzes, chat, and podcast voices. The key is stored only on this computer and used only to call your provider directly. A key you enter yourself is never overwritten by the publik setup.
+- **Use my own key** — paste an OpenAI (`sk-…`), Google Gemini (`AIza…`, free from [aistudio.google.com/apikey](https://aistudio.google.com/apikey)), Anthropic (`sk-ant-…`) or publik (`pk_…`) key for the highest-quality notes, quizzes, chat, and podcast voices. The provider is detected from the key (or pick it in Settings). The key is stored only on this computer and used only to call your provider directly. A key you enter yourself is never overwritten by the publik setup.
+  - **OpenAI and Gemini keys cover everything** — notes, flashcards, quizzes, chat, audio/YouTube transcription and podcast voices. Anthropic keys cover notes, flashcards, quizzes and chat.
+  - **Choose your models** in Settings → AI Engine → Models: a *main model* (notes, flashcards, quizzes, podcast scripts) and a *fast model* (chat, titles). The list is fetched live from your provider, so new models appear without an app update, and you can type any model id by hand. Left on *Default*, Gemini uses the newest stable Gemini Flash / Flash-Lite your key can see.
 
 Your notes and generated content live only on your machine (in the app's local database); you can export everything from Settings at any time.
 
@@ -90,7 +92,7 @@ Other scripts: `npm test` (Vitest), `npm run typecheck`.
 
 ```
 src/            React app (UI + all generation/engine/ingest logic, TypeScript)
-  lib/engine/   provider abstraction: publik API, OpenAI, Anthropic, and local Ollama
+  lib/engine/   provider abstraction: publik API, OpenAI, Google Gemini, Anthropic, and local Ollama
   lib/ingest/   text / url / youtube / pdf / docx / audio → normalized text
   lib/generation/  notes, flashcards, quiz, podcast, chat
 server/         the local server the desktop shell runs
@@ -133,7 +135,7 @@ Then cut a release: `git tag v0.1.3 && git push --tags`. That's it — nothing e
 
 ## Tech
 
-React 19 · Vite · Tailwind · Electron shell · publik API (default) · Ollama (local) · OpenAI / Anthropic (your own key) · KaTeX · FSRS spaced repetition. No backend of its own, no telemetry, no account required.
+React 19 · Vite · Tailwind · Electron shell · publik API (default) · Ollama (local) · OpenAI / Google Gemini / Anthropic (your own key) · KaTeX · FSRS spaced repetition. No backend of its own, no telemetry, no account required.
 
 ## License
 

@@ -21,6 +21,14 @@ export interface Store {
   /* Shallow equality filter over top-level fields. */
   where<T>(collection: string, match: Partial<T>): Promise<T[]>;
   clear(collection: string): Promise<void>;
+  /* Atomically delete every row matching `match` (shallow equality, as in
+     where()) and put `values` in its place — one transaction, so a reader
+     never sees the old and new rows together or an empty gap. */
+  replaceWhere<T extends { id: string }>(
+    collection: string,
+    match: Partial<T>,
+    values: T[],
+  ): Promise<void>;
 }
 
 export const COLLECTIONS = {
@@ -73,12 +81,28 @@ export class Repo {
   putCard = (c: Flashcard) => this.store.put(COLLECTIONS.flashcards, c);
   putCards = (cs: Flashcard[]) =>
     Promise.all(cs.map((c) => this.store.put(COLLECTIONS.flashcards, c)));
+  /* Regenerate: the note's deck becomes exactly `cs` (old cards removed in
+     the same transaction), so regenerating never doubles the deck. */
+  replaceCards = (noteId: string, cs: Flashcard[]) =>
+    this.store.replaceWhere<Flashcard>(
+      COLLECTIONS.flashcards,
+      { noteId },
+      cs.map((c) => ({ ...c, noteId })),
+    );
 
   // quiz
   questionsFor = (noteId: string) =>
     this.store.where<QuizQuestion>(COLLECTIONS.quiz, { noteId });
   putQuestions = (qs: QuizQuestion[]) =>
     Promise.all(qs.map((q) => this.store.put(COLLECTIONS.quiz, q)));
+  /* Regenerate: the note's quiz becomes exactly `qs`. Attempts are kept —
+     mastery is tracked per topic, which outlives any one question set. */
+  replaceQuestions = (noteId: string, qs: QuizQuestion[]) =>
+    this.store.replaceWhere<QuizQuestion>(
+      COLLECTIONS.quiz,
+      { noteId },
+      qs.map((q) => ({ ...q, noteId })),
+    );
   attemptsFor = (noteId: string) =>
     this.store.where<QuizAttempt>(COLLECTIONS.attempts, { noteId });
   putAttempt = (a: QuizAttempt) => this.store.put(COLLECTIONS.attempts, a);
@@ -93,6 +117,10 @@ export class Repo {
   podcastsFor = (noteId: string) =>
     this.store.where<Podcast>(COLLECTIONS.podcasts, { noteId });
   putPodcast = (p: Podcast) => this.store.put(COLLECTIONS.podcasts, p);
+  /* A new script supersedes the note's previous podcast(s) — and their stored
+     audio — instead of piling up behind it. */
+  replacePodcast = (noteId: string, p: Podcast) =>
+    this.store.replaceWhere<Podcast>(COLLECTIONS.podcasts, { noteId }, [{ ...p, noteId }]);
 
   // chat
   chatFor = async (noteId: string) =>

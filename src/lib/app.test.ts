@@ -62,7 +62,7 @@ describe("buildEngine", () => {
     const { buildEngine } = await import("./app");
     const e = await buildEngine({ mode: "publik", onboarded: true, language: "English" });
     expect(e?.provider).toBe("publik");
-    expect(e?.capabilities()).toEqual({ chat: true, transcription: true, tts: true, embeddings: true });
+    expect(e?.capabilities()).toEqual({ chat: true, transcription: true, tts: true, embeddings: true, vision: true });
     await e!.structured({ messages: [{ role: "user", content: "x" }], schema: {}, schemaName: "s", tier: "strong" });
     const call = fetchMock.mock.calls.find((c) => c[0] === "/api/publik/v1/chat/completions")!;
     expect(JSON.parse((call[1] as RequestInit).body as string).model).toBe("publik-balanced");
@@ -73,6 +73,6 @@ describe("buildEngine", () => {
     vi.stubGlobal("fetch", vi.fn(async () => status({ available: true, state: "ready", baseUrl: "/api/publik/v1", lines: ["chat"] })));
     const { buildEngine } = await import("./app");
     const e = await buildEngine({ mode: "publik", onboarded: true, language: "English" });
-    expect(e?.capabilities()).toEqual({ chat: true, transcription: false, tts: false, embeddings: false });
+    expect(e?.capabilities()).toEqual({ chat: true, transcription: false, tts: false, embeddings: false, vision: true });
   });
 });

@@ -4,19 +4,24 @@
    Anthropic has no first-party transcription/TTS/embeddings endpoints, so
    those three methods throw a friendly "unsupported" EngineError — callers
    should check `capabilities()` (or use src/lib/engine/router.ts) before
-   calling them. */
+   calling them. Claude does read PDFs and images, so it can OCR scanned
+   documents through readDocument(). */
 
 import type {
   ChatMessage,
   CompletionOptions,
+  DocumentPart,
   Engine,
   EngineCapabilities,
+  ModelInfo,
   StructuredOptions,
   TokenHandler,
   TranscriptResult,
   TtsOptions,
 } from "./types";
 import { EngineError } from "./types";
+import type { ModelChoice } from "../types";
+import { blobToBase64, isImagePart, isPdfPart, READ_DOCUMENT_MAX_TOKENS, READ_DOCUMENT_PROMPT } from "./vision";
 
 const BASE_URL = "https://api.anthropic.com/v1";
 const API_VERSION = "2023-06-01";
@@ -30,9 +35,10 @@ const API_VERSION = "2023-06-01";
 // replacements below were live-verified with a real request before shipping.
 const FALLBACK_MODEL_FAST = "claude-haiku-4-5-20251001";
 const FALLBACK_MODEL_STRONG = "claude-sonnet-4-5-20250929";
+export const ANTHROPIC_DEFAULT_MODELS = { fast: FALLBACK_MODEL_FAST, strong: FALLBACK_MODEL_STRONG };
 
 const UNSUPPORTED_MESSAGE =
-  "Anthropic does not support this operation; use an OpenAI key or local models.";
+  "Anthropic does not support this operation; use an OpenAI or Gemini key, or local models.";
 
 export class AnthropicEngine implements Engine {
   readonly mode = "cloud" as const;
@@ -41,10 +47,12 @@ export class AnthropicEngine implements Engine {
   constructor(
     private readonly apiKey: string,
     private readonly modelOverride?: string,
+    /* Per-tier model ids from Settings; a missing tier uses the fallback. */
+    private readonly chosen: ModelChoice = {},
   ) {}
 
   capabilities(): EngineCapabilities {
-    return { chat: true, transcription: false, tts: false, embeddings: false };
+    return { chat: true, transcription: false, tts: false, embeddings: false, vision: true, visionPdf: true };
   }
 
   async complete(opts: CompletionOptions, onToken?: TokenHandler): Promise<string> {
@@ -57,39 +65,30 @@ export class AnthropicEngine implements Engine {
       ...(system ? { system } : {}),
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
     }, opts.signal);
+    return readTextStream(res, onToken);
+  }
 
-    if (!res.body) throw new EngineError("Anthropic returned an empty stream.", "unknown");
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let full = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const data = trimmed.slice(5).trim();
-        if (!data) continue;
-        try {
-          const json = JSON.parse(data);
-          if (json.type === "content_block_delta" && json.delta?.type === "text_delta") {
-            const text: string = json.delta.text ?? "";
-            if (text) {
-              full += text;
-              onToken?.(text);
-            }
-          }
-        } catch {
-          /* malformed SSE chunk; skip it */
-        }
+  /* PDFs go in as document blocks, page images as image blocks. Streamed so a
+     long transcription isn't cut by an idle connection. */
+  async readDocument(parts: DocumentPart[], signal?: AbortSignal): Promise<string> {
+    const content: Array<Record<string, unknown>> = [];
+    for (const p of parts) {
+      if (!isPdfPart(p) && !isImagePart(p)) {
+        throw new EngineError(`Anthropic can't read ${p.mimeType} files.`, "unsupported");
       }
+      content.push({
+        type: isPdfPart(p) ? "document" : "image",
+        source: { type: "base64", media_type: p.mimeType, data: await blobToBase64(p.data) },
+      });
     }
-    return full;
+    content.push({ type: "text", text: READ_DOCUMENT_PROMPT });
+    const res = await this.post({
+      model: this.resolveModel("strong"),
+      max_tokens: READ_DOCUMENT_MAX_TOKENS,
+      messages: [{ role: "user", content }],
+      stream: true,
+    }, signal);
+    return (await readTextStream(res)).trim();
   }
 
   async structured<T>(opts: StructuredOptions<T>): Promise<T> {
@@ -153,18 +152,12 @@ export class AnthropicEngine implements Engine {
 
   private resolveModel(tier?: "fast" | "strong"): string {
     if (this.modelOverride) return this.modelOverride;
-    return tier === "strong" ? FALLBACK_MODEL_STRONG : FALLBACK_MODEL_FAST;
+    if (tier === "strong") return this.chosen.strong || FALLBACK_MODEL_STRONG;
+    return this.chosen.fast || FALLBACK_MODEL_FAST;
   }
 
   private headers(): Record<string, string> {
-    return {
-      "Content-Type": "application/json",
-      "x-api-key": this.apiKey,
-      "anthropic-version": API_VERSION,
-      /* Required for the key to be usable directly from a browser/renderer
-         context (Tauri webview) instead of only from a server. */
-      "anthropic-dangerous-direct-browser-access": "true",
-    };
+    return anthropicHeaders(this.apiKey);
   }
 
   private async post(body: Record<string, unknown>, signal?: AbortSignal): Promise<Response> {
@@ -182,6 +175,67 @@ export class AnthropicEngine implements Engine {
     if (!res.ok) throw await mapError(res);
     return res;
   }
+}
+
+/* Collect the text deltas of a Messages API SSE stream. */
+async function readTextStream(res: Response, onToken?: TokenHandler): Promise<string> {
+  if (!res.body) throw new EngineError("Anthropic returned an empty stream.", "unknown");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let full = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data) continue;
+      try {
+        const json = JSON.parse(data);
+        if (json.type === "content_block_delta" && json.delta?.type === "text_delta") {
+          const text: string = json.delta.text ?? "";
+          if (text) {
+            full += text;
+            onToken?.(text);
+          }
+        }
+      } catch {
+        /* malformed SSE chunk; skip it */
+      }
+    }
+  }
+  return full;
+}
+
+function anthropicHeaders(apiKey: string): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    "x-api-key": apiKey,
+    "anthropic-version": API_VERSION,
+    /* Required for the key to be usable directly from a browser/renderer
+       context (Tauri webview) instead of only from a server. */
+    "anthropic-dangerous-direct-browser-access": "true",
+  };
+}
+
+/* Claude models the key can call, newest first (GET /v1/models). */
+export async function listAnthropicModels(apiKey: string, signal?: AbortSignal): Promise<ModelInfo[]> {
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}/models?limit=1000`, { method: "GET", headers: anthropicHeaders(apiKey), signal });
+  } catch (err) {
+    throw toNetworkError(err);
+  }
+  if (res.status === 401) throw new EngineError("Invalid Anthropic API key.", "auth");
+  if (!res.ok) throw await mapError(res);
+  const json = (await res.json()) as { data?: Array<{ id: string; display_name?: string }> };
+  return (json.data ?? []).map((m) => ({ id: m.id, label: m.display_name }));
 }
 
 /* Anthropic keeps system instructions in a top-level `system` field (never in

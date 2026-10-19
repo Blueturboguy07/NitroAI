@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Download,
   FileText,
-  History,
   Layers,
   ListChecks,
   Loader2,
@@ -14,11 +13,12 @@ import {
   Mic,
   MoreVertical,
   Palette,
+  X,
 } from "lucide-react";
 import { toggleTheme } from "../lib/theme";
 import { useApp } from "../lib/app";
-import BlockEditor from "../components/BlockEditor";
-import Assistant from "../components/Assistant";
+import DocEditor from "../components/editor/DocEditor";
+import Assistant, { type Quote } from "../components/Assistant";
 import FlashcardsView from "../components/FlashcardsView";
 import QuizView from "../components/QuizView";
 import PodcastPanel from "../components/PodcastPanel";
@@ -29,7 +29,9 @@ import {
   printPdf,
 } from "../lib/export";
 import { now } from "../lib/ids";
-import type { Block, Note } from "../lib/types";
+import { effectiveColor, pathTo } from "../lib/library";
+import { FolderTab } from "../components/library/FolderBits";
+import type { Block, EditorDoc, Folder, Note } from "../lib/types";
 
 const railViews = [
   { view: "editor", icon: FileText, label: "Editor" },
@@ -140,38 +142,64 @@ function EditorView({
   onNote: (n: Note) => void;
 }) {
   const { repo } = useApp();
+  const navigate = useNavigate();
   const [panelOpen, setPanelOpen] = useState(true);
+  const [quote, setQuote] = useState<Quote | null>(null);
   const [title, setTitle] = useState(note.title);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [folders, setFolders] = useState<Folder[]>([]);
+  useEffect(() => {
+    repo?.listFolders().then(setFolders);
+  }, [repo]);
+  const path = pathTo(folders, note.folderId);
+  // Saves can come from the editor's debounce after other fields changed, so
+  // always merge into the latest note rather than the one from an old render.
+  const latest = useRef(note);
+  latest.current = note;
 
   function persist(patch: Partial<Note>) {
-    const next = { ...note, ...patch, updatedAt: now() };
+    const next = { ...latest.current, ...patch, updatedAt: now() };
+    latest.current = next;
     onNote(next);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => repo?.putNote(next), 400);
+    repo?.putNote(next);
   }
 
-  function onBlocks(blocks: Block[]) {
-    persist({ blocks });
+  function onDoc(doc: EditorDoc, blocks: Block[]) {
+    persist({ doc, blocks });
+  }
+
+  function askAI(text: string) {
+    setPanelOpen(true);
+    setQuote({ text, nonce: Date.now() });
   }
 
   return (
     <div className="flex h-full">
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex items-center justify-between px-6 py-4">
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            onBlur={() => persist({ title: title.trim() || "Untitled Document" })}
-            className="min-w-0 flex-1 bg-transparent font-display text-xl font-bold outline-none"
-          />
+          <div className="min-w-0 flex-1">
+            {path.length > 0 && (
+              <button
+                onClick={() => navigate(`/?folder=${path[path.length - 1].id}`)}
+                className="mb-0.5 flex max-w-full items-center gap-1.5 truncate text-xs font-semibold text-ink-faint hover:text-ink"
+              >
+                <FolderTab color={effectiveColor(folders, note.folderId)} className="h-2.5 w-1.5" />
+                <span className="truncate">{path.map((f) => f.name).join(" / ")}</span>
+              </button>
+            )}
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              onBlur={() => {
+                const next = title.trim() || "Untitled Document";
+                if (next !== title) setTitle(next);
+                // Only a real rename bumps updatedAt (and re-sorts the library).
+                if (next !== latest.current.title) persist({ title: next });
+              }}
+              aria-label="Note title"
+              className="w-full bg-transparent font-display text-xl font-bold outline-none"
+            />
+          </div>
           <div className="flex items-center gap-2">
-            <button
-              className="rounded-lg p-2 text-ink-dim hover:bg-card-hover hover:text-ink"
-              aria-label="Version history"
-            >
-              <History className="size-4.5" />
-            </button>
             <ExportMenu note={{ ...note, title }} />
             {!panelOpen && (
               <button
@@ -183,8 +211,8 @@ function EditorView({
             )}
           </div>
         </div>
-        <div className="mx-6 mb-6 flex-1 overflow-y-auto rounded-card border border-edge bg-card p-8 shadow-soft">
-          <BlockEditor key={note.id} blocks={note.blocks} onChange={onBlocks} />
+        <div className="mx-6 mb-6 min-h-0 flex-1 overflow-hidden rounded-card border border-edge bg-card shadow-soft">
+          <DocEditor key={note.id} note={note} onSave={onDoc} onAskAI={askAI} />
         </div>
       </div>
 
@@ -203,7 +231,7 @@ function EditorView({
             </div>
           </div>
           <div className="min-h-0 flex-1">
-            <Assistant note={note} variant="panel" />
+            <Assistant note={note} variant="panel" quote={quote} onClearQuote={() => setQuote(null)} />
           </div>
         </div>
       ) : (
@@ -221,10 +249,13 @@ function EditorView({
 
 function ExportMenu({ note }: { note: Note }) {
   const [open, setOpen] = useState(false);
+  const [exportErr, setExportErr] = useState<string | null>(null);
+  /* The Word export is Word-compatible HTML saved as .doc (no .docx writer is
+     bundled) — the label says so rather than promising a .docx. */
   const items: [string, () => void][] = [
     ["Export Markdown", () => downloadText(`${note.title}.md`, exportMarkdown(note), "text/markdown")],
     ["Export PDF", () => printPdf(note)],
-    ["Export Word", () => downloadText(`${note.title}.doc`, exportDocxHtml(note), "application/msword")],
+    ["Export Word (.doc, HTML)", () => downloadText(`${note.title}.doc`, exportDocxHtml(note), "application/msword")],
   ];
   return (
     <div className="relative">
@@ -238,13 +269,18 @@ function ExportMenu({ note }: { note: Note }) {
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-20 mt-1 w-44 rounded-xl border border-edge bg-card p-1 shadow-modal">
+          <div className="absolute right-0 z-20 mt-1 w-56 rounded-xl border border-edge bg-card p-1 shadow-modal">
             {items.map(([label, fn]) => (
               <button
                 key={label}
                 onClick={() => {
-                  fn();
                   setOpen(false);
+                  try {
+                    setExportErr(null);
+                    fn();
+                  } catch (e) {
+                    setExportErr(e instanceof Error ? e.message : "Export failed. Please try again.");
+                  }
                 }}
                 className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-card-hover"
               >
@@ -254,6 +290,22 @@ function ExportMenu({ note }: { note: Note }) {
             ))}
           </div>
         </>
+      )}
+      {exportErr && (
+        <div
+          role="alert"
+          className="absolute right-0 z-20 mt-1 flex w-72 items-start gap-2 rounded-xl border border-danger-ink/30 bg-danger-soft px-3 py-2 text-xs font-semibold text-danger-ink shadow-modal"
+        >
+          <span className="min-w-0 flex-1">{exportErr}</span>
+          <button
+            type="button"
+            onClick={() => setExportErr(null)}
+            aria-label="Dismiss"
+            className="shrink-0 rounded p-0.5 hover:bg-danger-ink/10"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
       )}
     </div>
   );

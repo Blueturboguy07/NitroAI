@@ -2,18 +2,24 @@
  *
  * YouTube's PoToken/BotGuard gate returns empty captions to any in-browser
  * fetch, so the SPA alone can't ingest YouTube links. This plugin exposes
- * GET /api/youtube-extract?url=… during dev/preview, backed by the exact same
+ * POST /api/youtube-extract?url=… during dev/preview, backed by the exact same
  * yt-dlp logic the packaged desktop shell uses (server/ytdlp.mjs) — captions
  * first, audio fallback, yt-dlp auto-downloaded on first use. Only a purely
  * static deployment (no local server, no desktop shell) is left without a
  * YouTube path.
+ *
+ * Same caller checks as the packaged server (server/requestGuard.mjs): loopback
+ * Host, our own Origin, X-NitroAI: 1 — so another website open in the browser
+ * can't make the dev server download yt-dlp and run it.
  */
 
 import path from "node:path";
 import type { Connect, Plugin } from "vite";
 import type { ServerResponse } from "node:http";
-// @ts-expect-error — plain-JS Node module, no type declarations
+// @ts-ignore — plain-JS Node module, no type declarations
 import { extractYoutube } from "./server/ytdlp.mjs";
+// @ts-ignore — plain-JS Node module, no type declarations
+import { checkApiRequest } from "./server/requestGuard.mjs";
 
 const CACHE_DIR = path.join(process.cwd(), "node_modules", ".cache", "nitroai");
 
@@ -30,11 +36,22 @@ function middleware(): Connect.NextHandleFunction {
       res.end(JSON.stringify(body));
     };
 
+    const refused = checkApiRequest(req, reqUrl.pathname, {
+      extraHosts: [process.env.TAURI_DEV_HOST],
+    }) as { status: number; error: string } | null;
+    if (refused) return send(refused.status, { error: refused.error });
+    if (req.method !== "POST") {
+      res.setHeader("allow", "POST");
+      return send(405, { error: "method not allowed" });
+    }
+
     if (!target) return send(400, { error: "missing url parameter" });
     extractYoutube(target, CACHE_DIR)
       .then((result: unknown) => send(200, result))
       .catch((err: unknown) =>
-        send(502, { error: err instanceof Error ? err.message : "extraction failed" }),
+        send((err as { code?: string })?.code === "invalid_youtube_url" ? 400 : 502, {
+          error: err instanceof Error ? err.message : "extraction failed",
+        }),
       );
   };
 }

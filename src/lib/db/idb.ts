@@ -49,5 +49,22 @@ export async function idbStore(name = "nitroai"): Promise<Store> {
     async clear(collection: string): Promise<void> {
       await db.clear(collection);
     },
+
+    async replaceWhere<T extends { id: string }>(
+      collection: string,
+      match: Partial<T>,
+      values: T[],
+    ): Promise<void> {
+      const entries = Object.entries(match as Record<string, unknown>);
+      const tx = db.transaction(collection, "readwrite");
+      let cursor = await tx.store.openCursor();
+      while (cursor) {
+        const row = cursor.value as Record<string, unknown>;
+        if (entries.every(([key, val]) => row[key] === val)) await cursor.delete();
+        cursor = await cursor.continue();
+      }
+      for (const v of values) await tx.store.put(v);
+      await tx.done;
+    },
   };
 }

@@ -14,6 +14,8 @@ import { useApp } from "../lib/app";
 import { contentFor, generateFlashcards } from "../lib/generation";
 import { bucketOf, reviewCard, studyOrder, type Rating } from "../lib/study/fsrs";
 import { EngineError } from "../lib/engine/types";
+import { describeError, type ShownError } from "../lib/publik";
+import { ErrorNotice } from "./PublikNotice";
 import type { Flashcard, Note } from "../lib/types";
 
 const RATINGS: { rating: Rating; label: string; className: string }[] = [
@@ -52,7 +54,7 @@ export default function FlashcardsView({ note }: { note: Note }) {
   const [loaded, setLoaded] = useState(false);
   const [cards, setCards] = useState<Flashcard[]>([]);
   const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ShownError | null>(null);
 
   const [flipped, setFlipped] = useState(false);
   const [sessionTotal, setSessionTotal] = useState(0);
@@ -108,24 +110,27 @@ export default function FlashcardsView({ note }: { note: Note }) {
 
   async function handleGenerate() {
     if (!engine) {
-      setError("Set up your engine in Settings first.");
+      setError({ message: "Set up your engine in Settings first.", action: null });
       return;
     }
     setError(null);
     setGenerating(true);
     try {
       const result = await generateFlashcards(engine, note);
-      if (repo) await repo.putCards(result);
+      // Regenerate replaces the deck rather than appending to it.
+      if (repo) await repo.replaceCards(note.id, result);
       setCards(result);
       setSessionTotal(dueQueueOf(result).length);
       setCycleQueue(null);
       setCycleIndex(0);
       setFlipped(false);
     } catch (e) {
+      // describeError() also raises the publik credit banner and carries
+      // the single top-up link for a 402.
       setError(
         e instanceof EngineError
-          ? e.message
-          : "Could not generate flashcards. Please try again.",
+          ? describeError(e)
+          : { message: "Could not generate flashcards. Please try again.", action: null },
       );
     } finally {
       setGenerating(false);
@@ -190,9 +195,8 @@ export default function FlashcardsView({ note }: { note: Note }) {
             {generating ? "Building flashcards…" : "Generate flashcards"}
           </button>
           {error && (
-            <div className="flex w-full items-start gap-2 rounded-xl bg-danger-soft px-4 py-3 text-sm text-danger-ink">
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{error}</span>
+            <div className="w-full">
+              <ErrorNotice err={error} onDismiss={() => setError(null)} />
             </div>
           )}
         </div>
@@ -219,9 +223,8 @@ export default function FlashcardsView({ note }: { note: Note }) {
           </div>
 
           {error && (
-            <div className="mt-4 flex items-start gap-2 rounded-xl bg-danger-soft px-4 py-3 text-sm text-danger-ink">
-              <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{error}</span>
+            <div className="mt-4">
+              <ErrorNotice err={error} onDismiss={() => setError(null)} />
             </div>
           )}
 

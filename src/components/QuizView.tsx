@@ -3,27 +3,16 @@
    generate/answer/reset flow against the repo + engine from useApp(). */
 
 import { useEffect, useMemo, useState } from "react";
-import {
-  AlertCircle,
-  CheckCircle2,
-  ListChecks,
-  Loader2,
-  RotateCcw,
-  XCircle,
-} from "lucide-react";
+import { AlertCircle, ListChecks, Loader2, RotateCcw } from "lucide-react";
 import { useApp } from "../lib/app";
-import { contentFor, generateQuiz } from "../lib/generation";
+import { ALL_QUIZ_TYPES, contentFor, generateQuiz } from "../lib/generation";
 import { EngineError } from "../lib/engine/types";
+import { describeError, type ShownError } from "../lib/publik";
+import { ErrorNotice } from "./PublikNotice";
 import { masteryByTopic, masteryColor, type TopicMastery } from "../lib/study/mastery";
 import { now, uuid } from "../lib/ids";
-import type { Note, QuizAttempt, QuizQuestion } from "../lib/types";
-
-type Difficulty = QuizQuestion["difficulty"];
-
-interface AnsweredState {
-  chosen: number | string;
-  correct: boolean;
-}
+import type { Note, QuizAttempt, QuizQuestion, QuizType } from "../lib/types";
+import { QuestionCard, QuizSettings, useQuizSession, type Difficulty } from "./quiz/QuestionCard";
 
 export default function QuizView({ note }: { note: Note }) {
   const { repo, engine } = useApp();
@@ -31,13 +20,13 @@ export default function QuizView({ note }: { note: Note }) {
   const [loaded, setLoaded] = useState(false);
   const [questions, setQuestions] = useState<QuizQuestion[]>([]);
   const [attempts, setAttempts] = useState<QuizAttempt[]>([]);
-  const [answered, setAnswered] = useState<Record<string, AnsweredState>>({});
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const session = useQuizSession((q, correct) => void recordAttempt(q, correct));
 
   const [difficulty, setDifficulty] = useState<Difficulty>("intermediate");
   const [count, setCount] = useState(10);
+  const [types, setTypes] = useState<QuizType[]>(ALL_QUIZ_TYPES);
   const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ShownError | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -60,43 +49,36 @@ export default function QuizView({ note }: { note: Note }) {
 
   const content = contentFor(note);
   const mastery = useMemo(() => masteryByTopic(questions, attempts), [questions, attempts]);
-  const scoreCorrect = useMemo(
-    () => Object.values(answered).filter((a) => a.correct).length,
-    [answered],
-  );
 
   async function handleGenerate() {
     if (!engine) {
-      setError("Set up your engine in Settings first.");
+      setError({ message: "Set up your engine in Settings first.", action: null });
       return;
     }
     if (!repo) return;
     setError(null);
     setGenerating(true);
     try {
-      const result = await generateQuiz(engine, note, { count, difficulty });
-      await repo.putQuestions(result);
+      const result = await generateQuiz(engine, note, { count, difficulty, types });
+      // Regenerate replaces the note's quiz rather than appending to it.
+      await repo.replaceQuestions(note.id, result);
       setQuestions(result);
-      setAnswered({});
-      setDrafts({});
+      session.reset();
     } catch (e) {
+      // describeError() also raises the publik credit banner and carries
+      // the single top-up link for a 402.
       setError(
         e instanceof EngineError
-          ? e.message
-          : "Could not generate the quiz. Please try again.",
+          ? describeError(e)
+          : { message: "Could not generate the quiz. Please try again.", action: null },
       );
     } finally {
       setGenerating(false);
     }
   }
 
-  async function handleAnswer(q: QuizQuestion, chosenIndex: number | null, chosenText?: string) {
-    if (!repo || answered[q.id]) return;
-    const correct =
-      q.type === "fill_blank"
-        ? (chosenText ?? "").trim().toLowerCase() === (q.options[0] ?? "").trim().toLowerCase()
-        : chosenIndex === q.correctIndex;
-
+  async function recordAttempt(q: QuizQuestion, correct: boolean) {
+    if (!repo) return;
     const attempt: QuizAttempt = {
       id: uuid(),
       noteId: note.id,
@@ -107,18 +89,13 @@ export default function QuizView({ note }: { note: Note }) {
     };
     await repo.putAttempt(attempt);
     setAttempts((prev) => [...prev, attempt]);
-    setAnswered((prev) => ({
-      ...prev,
-      [q.id]: { chosen: chosenIndex ?? chosenText ?? "", correct },
-    }));
   }
 
   async function handleReset() {
     if (!repo) return;
     await repo.resetQuiz(note.id);
     setAttempts([]);
-    setAnswered({});
-    setDrafts({});
+    session.reset();
   }
 
   if (!content.trim()) {
@@ -154,35 +131,19 @@ export default function QuizView({ note }: { note: Note }) {
 
       {questions.length === 0 ? (
         <div className="mx-auto mt-10 max-w-xl rounded-card border border-edge bg-card p-6 shadow-soft">
-          <div className="flex flex-wrap items-end gap-4">
-            <div>
-              <label className="text-xs font-semibold text-ink-faint">Difficulty</label>
-              <select
-                value={difficulty}
-                onChange={(e) => setDifficulty(e.target.value as Difficulty)}
-                className="mt-1 block rounded-xl border border-edge bg-panel px-3 py-2 text-sm outline-none"
-              >
-                <option value="basic">Basic</option>
-                <option value="intermediate">Intermediate</option>
-                <option value="exam">Exam</option>
-              </select>
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-ink-faint">Questions</label>
-              <select
-                value={count}
-                onChange={(e) => setCount(Number(e.target.value))}
-                className="mt-1 block rounded-xl border border-edge bg-panel px-3 py-2 text-sm outline-none"
-              >
-                <option value={5}>5</option>
-                <option value={10}>10</option>
-                <option value={15}>15</option>
-              </select>
-            </div>
+          <QuizSettings
+            difficulty={difficulty}
+            onDifficulty={setDifficulty}
+            count={count}
+            onCount={setCount}
+            types={types}
+            onTypes={setTypes}
+          />
+          <div className="mt-5 flex justify-end">
             <button
               onClick={handleGenerate}
               disabled={generating}
-              className="ml-auto flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60"
+              className="flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60"
             >
               {generating ? (
                 <>
@@ -198,8 +159,8 @@ export default function QuizView({ note }: { note: Note }) {
             </button>
           </div>
           {error && (
-            <div className="mt-4 rounded-xl bg-danger-soft px-4 py-3 text-sm font-semibold text-danger-ink">
-              {error}
+            <div className="mt-4">
+              <ErrorNotice err={error} onDismiss={() => setError(null)} />
             </div>
           )}
         </div>
@@ -209,19 +170,11 @@ export default function QuizView({ note }: { note: Note }) {
             <div className="flex items-center justify-between">
               <h2 className="font-display text-lg font-bold text-ink">Questions</h2>
               <span className="rounded-full bg-accent-softer px-3 py-1 text-xs font-bold text-accent">
-                {scoreCorrect} / {questions.length} correct
+                {session.score} / {questions.length} correct
               </span>
             </div>
             {questions.map((q, i) => (
-              <QuestionCard
-                key={q.id}
-                index={i}
-                q={q}
-                answer={answered[q.id]}
-                draft={drafts[q.id] ?? ""}
-                onDraftChange={(v) => setDrafts((prev) => ({ ...prev, [q.id]: v }))}
-                onAnswer={(chosenIndex, chosenText) => handleAnswer(q, chosenIndex, chosenText)}
-              />
+              <QuestionCard key={q.id} index={i} {...session.cardProps(q)} />
             ))}
           </div>
 
@@ -237,92 +190,6 @@ function Header() {
     <div className="text-center">
       <h1 className="font-display text-4xl font-bold">Welcome to Quizzes</h1>
       <p className="mt-2 text-ink-faint">Test yourself and track mastery by topic.</p>
-    </div>
-  );
-}
-
-function QuestionCard({
-  q,
-  index,
-  answer,
-  draft,
-  onDraftChange,
-  onAnswer,
-}: {
-  q: QuizQuestion;
-  index: number;
-  answer?: AnsweredState;
-  draft: string;
-  onDraftChange: (v: string) => void;
-  onAnswer: (chosenIndex: number | null, chosenText?: string) => void;
-}) {
-  const isAnswered = !!answer;
-
-  return (
-    <div className="rounded-card border border-edge bg-card p-6 shadow-soft">
-      <div className="flex items-start justify-between gap-4">
-        <p className="font-display text-base font-semibold text-ink">
-          <span className="mr-2 text-ink-faint">{index + 1}.</span>
-          {q.question}
-        </p>
-        {isAnswered &&
-          (answer.correct ? (
-            <CheckCircle2 className="size-5 shrink-0 text-green-600" />
-          ) : (
-            <XCircle className="size-5 shrink-0 text-danger-ink" />
-          ))}
-      </div>
-
-      {q.type === "fill_blank" ? (
-        <div className="mt-4 flex items-center gap-2">
-          <input
-            value={isAnswered ? String(answer.chosen) : draft}
-            onChange={(e) => onDraftChange(e.target.value)}
-            disabled={isAnswered}
-            placeholder="Type your answer…"
-            className="w-full rounded-xl border border-edge bg-panel px-3 py-2 text-sm outline-none placeholder:text-ink-faint disabled:opacity-70"
-          />
-          <button
-            onClick={() => onAnswer(null, draft)}
-            disabled={isAnswered || !draft.trim()}
-            className="shrink-0 rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-50"
-          >
-            Check
-          </button>
-        </div>
-      ) : (
-        <div className="mt-4 grid gap-2 sm:grid-cols-2">
-          {q.options.map((opt, i) => {
-            let cls = "border-edge bg-panel hover:bg-card-hover";
-            if (isAnswered) {
-              if (i === q.correctIndex) {
-                cls = "border-transparent bg-success-soft text-ink";
-              } else if (i === answer.chosen) {
-                cls = "border-transparent bg-danger-soft text-danger-ink";
-              } else {
-                cls = "border-edge bg-panel text-ink-faint opacity-60";
-              }
-            }
-            return (
-              <button
-                key={i}
-                disabled={isAnswered}
-                onClick={() => onAnswer(i)}
-                className={`rounded-xl border px-4 py-2.5 text-left text-sm font-semibold ${cls}`}
-              >
-                {opt}
-              </button>
-            );
-          })}
-        </div>
-      )}
-
-      {isAnswered && q.explanation && (
-        <div className="mt-4 rounded-xl bg-accent-softer p-4 text-sm text-ink-dim">
-          <span className="font-display font-bold text-ink">Explanation: </span>
-          {q.explanation}
-        </div>
-      )}
     </div>
   );
 }

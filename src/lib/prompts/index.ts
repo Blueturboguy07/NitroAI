@@ -132,9 +132,36 @@ export function quizSystem(opts: {
     "For mcq: exactly 4 plausible options, one correct. For true_false: options",
     'are ["True","False"]. For fill_blank: options is a single-element array with',
     "the exact answer, and correctIndex is 0; write the question with a ___ blank.",
+    "For short_answer: an open question answered in 1–3 sentences (explain, compare,",
+    "apply); options is a single-element array holding a complete model answer that",
+    "names the key points a correct answer must include, and correctIndex is 0.",
     "correctIndex is the 0-based index of the correct option. Every question needs",
     "a one-sentence explanation of why the answer is correct. Tag each with a topic.",
+    "Text may use inline Markdown; write all math as inline KaTeX, e.g. `$4 \\le x \\le 8$`.",
   ].join("\n");
+}
+
+/* A quiz drawn from several lessons at once. The user message numbers each
+   lesson; every question names the lesson it came from so it can be traced
+   back to its note. */
+export function sampleQuizSystem(opts: {
+  count: number;
+  difficulty: string;
+  types: string[];
+  lessons: number;
+}): string {
+  return [
+    quizSystem(opts),
+    `The material is split into ${opts.lessons} numbered lessons. Spread the`,
+    "questions across the lessons in proportion to how much each one covers, and",
+    "set `lesson` to the number of the lesson each question is drawn from.",
+  ].join("\n");
+}
+
+export function sampleQuizUser(lessons: { title: string; content: string }[]): string {
+  return lessons
+    .map((l, i) => `--- LESSON ${i + 1}: ${l.title} ---\n${l.content}`)
+    .join("\n\n");
 }
 
 export const quizSchema = {
@@ -157,7 +184,7 @@ export const quizSchema = {
           "explanation",
         ],
         properties: {
-          type: { type: "string", enum: ["mcq", "true_false", "fill_blank"] },
+          type: { type: "string", enum: ["mcq", "true_false", "fill_blank", "short_answer"] },
           topic: { type: "string" },
           difficulty: {
             type: "string",
@@ -168,6 +195,23 @@ export const quizSchema = {
           correctIndex: { type: "integer" },
           explanation: { type: "string" },
         },
+      },
+    },
+  },
+} as const;
+
+/* quizSchema plus a 1-based `lesson` on every question. Strict-mode providers
+   need every property listed in `required`, so it is added to both. */
+const quizItem = quizSchema.properties.questions.items;
+export const sampleQuizSchema = {
+  ...quizSchema,
+  properties: {
+    questions: {
+      type: "array",
+      items: {
+        ...quizItem,
+        required: [...quizItem.required, "lesson"],
+        properties: { ...quizItem.properties, lesson: { type: "integer" } },
       },
     },
   },
@@ -187,6 +231,23 @@ export function chatSystem(noteTitle: string, sourceText: string): string {
     "--- SOURCE MATERIAL ---",
     sourceText.slice(0, 100_000),
     "--- END SOURCE MATERIAL ---",
+  ].join("\n");
+}
+
+/* A chat question about a passage the user highlighted in their document
+   ("Ask AI"). The returned string is the user message the model sees. */
+export function quotedQuestion(question: string, quote: string): string {
+  // The whole note is already in the system prompt, so a huge selection only
+  // needs enough to pin down which part the user means.
+  const passage = quote.length > 4000 ? `${quote.slice(0, 4000)}…` : quote;
+  return [
+    "I highlighted this passage in the document:",
+    "--- HIGHLIGHTED PASSAGE ---",
+    passage,
+    "--- END HIGHLIGHTED PASSAGE ---",
+    "",
+    "Focus your answer on this passage, using the rest of the document only for context.",
+    `My question: ${question}`,
   ].join("\n");
 }
 

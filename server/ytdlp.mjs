@@ -72,23 +72,61 @@ async function runYtdlp(bin, args) {
   }
 }
 
+const VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
+/* The only inputs yt-dlp ever sees: a YouTube video URL (watch?v=, youtu.be/,
+   /embed/, /shorts/, /live/ on youtube.com, m./www./music. and
+   youtube-nocookie.com) or a bare 11-char id — canonicalised to
+   https://www.youtube.com/watch?v=<id>. Anything else (another site, a
+   "-"-prefixed option, file://, a playlist-only link) is refused, so the
+   endpoint can't be used for option injection or to make yt-dlp fetch
+   arbitrary URLs. Returns the canonical URL, or null. */
+export function canonicalYoutubeUrl(input) {
+  if (typeof input !== "string") return null;
+  const raw = input.trim();
+  if (!raw || raw.length > 2048) return null;
+  if (VIDEO_ID_RE.test(raw)) return `https://www.youtube.com/watch?v=${raw}`;
+  let u;
+  try {
+    u = new URL(/^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    return null;
+  }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  if (u.username || u.password || u.port) return null;
+  const host = u.hostname.toLowerCase().replace(/^(www\.|m\.|music\.)/, "");
+  let id = null;
+  if (host === "youtu.be") {
+    id = u.pathname.slice(1).split("/")[0] ?? null;
+  } else if (host === "youtube.com" || host === "youtube-nocookie.com") {
+    if (u.pathname === "/watch") id = u.searchParams.get("v");
+    else id = /^\/(?:embed|shorts|live|v)\/([A-Za-z0-9_-]{11})(?:[/?]|$)/.exec(u.pathname)?.[1] ?? null;
+  }
+  return id && VIDEO_ID_RE.test(id) ? `https://www.youtube.com/watch?v=${id}` : null;
+}
+
 /* Extract a YouTube URL. Returns { transcript, audioBase64, audioExt, title }
    — the same shape the desktop Rust command returns, so the client handles
-   both identically. `binDir` is where yt-dlp is cached/downloaded. */
-export async function extractYoutube(url, binDir) {
+   both identically. `binDir` is where yt-dlp is cached/downloaded. Throws
+   (with code "invalid_youtube_url") for anything that isn't a YouTube video. */
+export async function extractYoutube(input, binDir) {
+  const url = canonicalYoutubeUrl(input);
+  if (!url) {
+    throw Object.assign(new Error("That doesn't look like a YouTube video link."), { code: "invalid_youtube_url" });
+  }
   const bin = await ensureYtdlp(binDir);
   const dir = fs.mkdtempSync(
     path.join(os.tmpdir(), `nitroai-yt-${createHash("sha1").update(url).digest("hex").slice(0, 8)}-`),
   );
   const outTmpl = path.join(dir, "%(id)s.%(ext)s");
   try {
-    const titleRun = await runYtdlp(bin, ["--no-warnings", "--print", "title", url]);
+    const titleRun = await runYtdlp(bin, ["--no-warnings", "--print", "title", "--", url]);
     const title = titleRun.ok ? titleRun.stdout.trim() || null : null;
 
     // 1) captions (human + auto)
     await runYtdlp(bin, [
       "--no-warnings", "--skip-download", "--write-auto-sub", "--write-sub",
-      "--sub-langs", "en.*", "--sub-format", "vtt", "-o", outTmpl, url,
+      "--sub-langs", "en.*", "--sub-format", "vtt", "-o", outTmpl, "--", url,
     ]);
     for (const entry of fs.readdirSync(dir)) {
       if (!entry.endsWith(".vtt")) continue;
@@ -99,7 +137,7 @@ export async function extractYoutube(url, binDir) {
     }
 
     // 2) audio fallback (Whisper accepts m4a/webm/mp3/wav/ogg)
-    const audioRun = await runYtdlp(bin, ["--no-warnings", "-f", "bestaudio", "-o", outTmpl, url]);
+    const audioRun = await runYtdlp(bin, ["--no-warnings", "-f", "bestaudio", "-o", outTmpl, "--", url]);
     if (!audioRun.ok) throw new Error(`yt-dlp failed: ${audioRun.stderr.trim().slice(0, 400)}`);
     for (const entry of fs.readdirSync(dir)) {
       const ext = path.extname(entry).slice(1).toLowerCase();

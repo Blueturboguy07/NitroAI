@@ -14,8 +14,10 @@
 import type {
   ChatMessage,
   CompletionOptions,
+  DocumentPart,
   Engine,
   EngineCapabilities,
+  ModelInfo,
   StructuredOptions,
   TokenHandler,
   TranscriptResult,
@@ -23,11 +25,23 @@ import type {
   TtsOptions,
 } from "./types";
 import { EngineError } from "./types";
+import type { ModelChoice } from "../types";
 import { unsupportedMessage, type Task } from "./router";
-import { chunkAudioForUpload, type AudioChunk, type AudioDecoder } from "../audio/chunk";
+import { audioFilename, chunkAudioForUpload, type AudioChunk, type AudioDecoder } from "../audio/chunk";
+import { assertImageParts, blobToBase64, READ_DOCUMENT_MAX_TOKENS, READ_DOCUMENT_PROMPT } from "./vision";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
-const ALL_CAPS: EngineCapabilities = { chat: true, transcription: true, tts: true, embeddings: true };
+/* OpenAI's own transcription limit is 25 MB per file; bigger recordings are
+   decoded and split, the same way the publik path always is. */
+const OPENAI_MAX_UPLOAD_BYTES = 24 * 1024 * 1024;
+export const OPENAI_DEFAULT_MODELS = { fast: "gpt-4o-mini", strong: "gpt-4o" };
+/* Reasoning models spend max_completion_tokens on hidden reasoning before
+   the visible answer; this much is added so a 30-token title still fits. */
+const REASONING_HEADROOM = 2048;
+/* Vision = reads page images, not whole PDFs, so scanned PDFs are rendered
+   to images first. On publik the bits come from the credential's lines
+   (linesToCapabilities). */
+const ALL_CAPS: EngineCapabilities = { chat: true, transcription: true, tts: true, embeddings: true, vision: true };
 
 /* What the gateway stamps on every metered call (contract §1). Streams settle
    after the headers, so on a stream only `reservedMicros` is meaningful and the
@@ -48,7 +62,8 @@ export interface UsageHeaders {
 export interface OpenAIEngineOptions {
   baseUrl?: string;
   provider?: "openai" | "publik";
-  models?: { fast: string; strong: string };
+  /* Per-tier model ids; a missing or empty tier uses OPENAI_DEFAULT_MODELS. */
+  models?: ModelChoice;
   capabilities?: EngineCapabilities;
   onUsage?: (u: UsageHeaders) => void;
   /* Test seam for the audio chunker (no AudioContext under Node). */
@@ -71,7 +86,10 @@ export class OpenAIEngine implements Engine {
   ) {
     this.provider = opts.provider ?? "openai";
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
-    this.models = opts.models ?? { fast: "gpt-4o-mini", strong: "gpt-4o" };
+    this.models = {
+      fast: opts.models?.fast || OPENAI_DEFAULT_MODELS.fast,
+      strong: opts.models?.strong || OPENAI_DEFAULT_MODELS.strong,
+    };
     this.caps = opts.capabilities ?? { ...ALL_CAPS };
     this.onUsage = opts.onUsage;
     this.audioDecoder = opts.audioDecoder;
@@ -82,12 +100,12 @@ export class OpenAIEngine implements Engine {
   }
 
   async complete(opts: CompletionOptions, onToken?: TokenHandler): Promise<string> {
+    const model = this.resolveModel(opts.tier);
     const res = await this.post("/chat/completions", {
-      model: this.resolveModel(opts.tier),
+      model,
       messages: buildMessages(opts),
       stream: true,
-      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-      ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...this.sampling(model, opts),
     }, opts.signal, true);
 
     if (!res.body) throw new EngineError(`${this.label()} returned an empty stream.`, "unknown");
@@ -123,12 +141,12 @@ export class OpenAIEngine implements Engine {
   }
 
   async structured<T>(opts: StructuredOptions<T>): Promise<T> {
+    const model = this.resolveModel(opts.tier);
     const res = await this.post("/chat/completions", {
-      model: this.resolveModel(opts.tier),
+      model,
       messages: buildMessages(opts),
       stream: false,
-      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-      ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...this.sampling(model, opts),
       response_format: {
         type: "json_schema",
         json_schema: { name: opts.schemaName, schema: opts.schema, strict: true },
@@ -140,18 +158,25 @@ export class OpenAIEngine implements Engine {
     if (typeof content !== "string") {
       throw new EngineError(`${this.label()} returned no structured content.`, "unknown");
     }
-    return JSON.parse(content) as T;
+    try {
+      return JSON.parse(content) as T;
+    } catch {
+      throw new EngineError("The model returned an unreadable answer — try again.", "unknown");
+    }
   }
 
   async transcribe(audio: Blob, signal?: AbortSignal): Promise<TranscriptResult> {
     this.assertCap("transcription");
     /* publik API sits behind a 4 MB request cap: chunk client-side. The BYO
-       path keeps sending the file whole (OpenAI's own limit is 25 MB and the
-       pipeline already guards at 24 MB). */
+       path sends the file whole up to OpenAI's 25 MB limit and splits it
+       beyond that. */
+    const decode = this.audioDecoder ? { decode: this.audioDecoder } : {};
     const chunks: AudioChunk[] =
       this.provider === "publik"
-        ? await chunkAudioForUpload(audio, this.audioDecoder ? { decode: this.audioDecoder } : {})
-        : [{ blob: audio, filename: "audio.webm", offsetSeconds: 0 }];
+        ? await chunkAudioForUpload(audio, decode)
+        : audio.size > OPENAI_MAX_UPLOAD_BYTES
+          ? await chunkAudioForUpload(audio, { maxBytes: OPENAI_MAX_UPLOAD_BYTES, ...decode })
+          : [{ blob: audio, filename: audioFilename(audio), offsetSeconds: 0 }];
 
     const texts: string[] = [];
     const segments: TranscriptSegment[] = [];
@@ -222,7 +247,7 @@ export class OpenAIEngine implements Engine {
        exactly which models to enable, not just the last one attempted. */
     if (this.provider === "publik") {
       throw new EngineError(
-        `publik API couldn't serve a text-to-speech model (tried ${tried.join(", ")}). Try again later, or add your own OpenAI key in Settings for voices.`,
+        `publik API couldn't serve a text-to-speech model (tried ${tried.join(", ")}). Try again later, or add your own OpenAI or Gemini key in Settings for voices.`,
         "model_missing",
       );
     }
@@ -245,6 +270,27 @@ export class OpenAIEngine implements Engine {
     return (json.data ?? []).map((d: { embedding: number[] }) => d.embedding);
   }
 
+  async readDocument(parts: DocumentPart[], signal?: AbortSignal): Promise<string> {
+    this.assertCap("vision");
+    assertImageParts(parts, this.label());
+    const model = this.resolveModel("strong");
+    const images = await Promise.all(
+      parts.map(async (p) => ({
+        type: "image_url",
+        image_url: { url: `data:${p.mimeType};base64,${await blobToBase64(p.data)}`, detail: "high" },
+      })),
+    );
+    const res = await this.post("/chat/completions", {
+      model,
+      messages: [{ role: "user", content: [...images, { type: "text", text: READ_DOCUMENT_PROMPT }] }],
+      stream: false,
+      ...this.sampling(model, { messages: [], maxTokens: READ_DOCUMENT_MAX_TOKENS }),
+    }, signal);
+    const json = await res.json();
+    const content = json.choices?.[0]?.message?.content;
+    return typeof content === "string" ? content.trim() : "";
+  }
+
   async validate(): Promise<void> {
     let res: Response;
     try {
@@ -265,7 +311,7 @@ export class OpenAIEngine implements Engine {
   }
 
   private assertCap(task: Task): void {
-    if (!this.caps[task === "transcription" ? "transcription" : task]) {
+    if (!this.caps[task]) {
       throw new EngineError(unsupportedMessage(task, this.provider), "unsupported");
     }
   }
@@ -273,6 +319,25 @@ export class OpenAIEngine implements Engine {
   private resolveModel(tier?: "fast" | "strong"): string {
     if (this.modelOverride) return this.modelOverride;
     return tier === "strong" ? this.models.strong : this.models.fast;
+  }
+
+  /* temperature / token limit for one request. OpenAI's reasoning models
+     (o-series, GPT-5) reject a non-default temperature and the legacy
+     max_tokens; every current OpenAI chat model takes max_completion_tokens.
+     The publik gateway keeps the parameters it has always been sent. */
+  private sampling(model: string, opts: CompletionOptions): Record<string, number> {
+    const out: Record<string, number> = {};
+    if (this.provider === "publik") {
+      if (opts.temperature !== undefined) out.temperature = opts.temperature;
+      if (opts.maxTokens !== undefined) out.max_tokens = opts.maxTokens;
+      return out;
+    }
+    const reasoning = isReasoningModel(model);
+    if (opts.temperature !== undefined && !reasoning) out.temperature = opts.temperature;
+    if (opts.maxTokens !== undefined) {
+      out.max_completion_tokens = opts.maxTokens + (reasoning ? REASONING_HEADROOM : 0);
+    }
+    return out;
   }
 
   /* On the publik path through the local proxy there is no key in the
@@ -340,6 +405,42 @@ export class OpenAIEngine implements Engine {
   private async mapError(res: Response): Promise<EngineError> {
     return mapError(res, this.provider);
   }
+}
+
+function isReasoningModel(model: string): boolean {
+  return /^(o\d|gpt-5)/.test(model);
+}
+
+/* Chat models the key can call, newest first. On the OpenAI path the list
+   also has audio, image, embedding and realtime models — those can't write
+   notes, so they're left out. */
+export async function listOpenAIModels(
+  apiKey: string,
+  opts: { baseUrl?: string; provider?: "openai" | "publik"; signal?: AbortSignal } = {},
+): Promise<ModelInfo[]> {
+  const provider = opts.provider ?? "openai";
+  const baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/models`, {
+      method: "GET",
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+      signal: opts.signal,
+    });
+  } catch (err) {
+    throw toNetworkError(err);
+  }
+  if (!res.ok) throw await mapError(res, provider);
+  const json = (await res.json()) as { data?: Array<{ id: string; created?: number }> };
+  return (json.data ?? [])
+    .filter(
+      (m) =>
+        provider === "publik" ||
+        (/^(gpt-|o\d|chatgpt-)/.test(m.id) &&
+          !/audio|realtime|tts|transcribe|image|search|embedding|instruct|moderation|dall-e|whisper|computer-use|codex|deep-research/.test(m.id)),
+    )
+    .sort((a, b) => (b.created ?? 0) - (a.created ?? 0))
+    .map((m) => ({ id: m.id }));
 }
 
 function buildMessages(opts: CompletionOptions): Array<{ role: string; content: string }> {

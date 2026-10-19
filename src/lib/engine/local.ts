@@ -4,11 +4,16 @@
 
    Speech-to-text and text-to-speech have no local backend wired up yet
    (whisper.cpp / Kokoro are future work), so those throw a "model_missing"
-   EngineError with actionable guidance instead of silently failing. */
+   EngineError with actionable guidance instead of silently failing.
+
+   Visual document reading (scanned PDFs) works when the chosen model takes
+   images (llava, qwen2.5vl, gemma3, llama3.2-vision…) — the default
+   qwen2.5:3b doesn't, so capabilities() reports it per model. */
 
 import type {
   ChatMessage,
   CompletionOptions,
+  DocumentPart,
   Engine,
   EngineCapabilities,
   StructuredOptions,
@@ -17,6 +22,7 @@ import type {
   TtsOptions,
 } from "./types";
 import { EngineError } from "./types";
+import { assertImageParts, blobToBase64, isLocalVisionModel, READ_DOCUMENT_PROMPT } from "./vision";
 
 const DEFAULT_BASE_URL = "http://localhost:11434";
 /* qwen2.5:3b — a ~1.9 GB download that runs on modest laptops and is
@@ -37,7 +43,7 @@ export class LocalEngine implements Engine {
   }
 
   capabilities(): EngineCapabilities {
-    return { chat: true, transcription: false, tts: false, embeddings: true };
+    return { chat: true, transcription: false, tts: false, embeddings: true, vision: isLocalVisionModel(this.model) };
   }
 
   async complete(opts: CompletionOptions, onToken?: TokenHandler): Promise<string> {
@@ -104,14 +110,18 @@ export class LocalEngine implements Engine {
     if (!content) {
       throw new EngineError("Ollama returned no content for structured output.", "unknown");
     }
-    return JSON.parse(content) as T;
+    try {
+      return JSON.parse(content) as T;
+    } catch {
+      throw new EngineError("The model returned an unreadable answer — try again.", "unknown");
+    }
   }
 
   async transcribe(_audio: Blob, _signal?: AbortSignal): Promise<TranscriptResult> {
     // whisper.cpp isn't wired up yet, and there's no setting anywhere to
     // point NitroAI at a self-hosted Whisper server — don't suggest one.
     throw new EngineError(
-      "Local mode can't transcribe audio yet. Add an OpenAI key in Settings — NitroAI uses OpenAI's Whisper API automatically, nothing else to connect.",
+      "Local mode can't transcribe audio yet. Add an OpenAI or Gemini key in Settings — NitroAI transcribes with it automatically, nothing else to connect.",
       "model_missing",
     );
   }
@@ -128,6 +138,26 @@ export class LocalEngine implements Engine {
       results.push(json.embedding as number[]);
     }
     return results;
+  }
+
+  async readDocument(parts: DocumentPart[], signal?: AbortSignal): Promise<string> {
+    if (!isLocalVisionModel(this.model)) {
+      throw new EngineError(
+        `The local model ${this.model} can't read images. Pick a vision model (e.g. qwen2.5vl or llama3.2-vision) in Settings.`,
+        "unsupported",
+      );
+    }
+    assertImageParts(parts, "Local mode");
+    const images = await Promise.all(parts.map((p) => blobToBase64(p.data)));
+    const res = await this.post("/api/chat", {
+      model: this.model,
+      messages: [{ role: "user", content: READ_DOCUMENT_PROMPT, images }],
+      stream: false,
+      options: { num_ctx: LOCAL_NUM_CTX },
+    }, signal);
+    const json = await res.json();
+    const content: string | undefined = json.message?.content;
+    return (content ?? "").trim();
   }
 
   async validate(): Promise<void> {
@@ -153,7 +183,7 @@ export class LocalEngine implements Engine {
       if (err instanceof Error && err.name === "AbortError") throw err;
       throw unreachable(this.baseUrl);
     }
-    if (!res.ok) throw unreachable(this.baseUrl);
+    if (!res.ok) throw await ollamaError(res, String(body.model ?? this.model));
     return res;
   }
 }
@@ -167,11 +197,35 @@ function buildMessages(opts: CompletionOptions): Array<{ role: string; content: 
   return out;
 }
 
+/* Ollama's default context window (2–4k tokens) silently drops the start of
+   a long prompt — i.e. most of a lecture. 16k fits a full note chunk plus
+   instructions and still runs on modest laptops. */
+export const LOCAL_NUM_CTX = 16384;
+
 function buildOptions(opts: CompletionOptions): Record<string, number> {
-  const options: Record<string, number> = {};
+  const options: Record<string, number> = { num_ctx: LOCAL_NUM_CTX };
   if (opts.temperature !== undefined) options.temperature = opts.temperature;
   if (opts.maxTokens !== undefined) options.num_predict = opts.maxTokens;
   return options;
+}
+
+/* Ollama answers errors as {"error": "..."}; a 404 means the model isn't
+   downloaded (the server itself is up). */
+async function ollamaError(res: Response, model: string): Promise<EngineError> {
+  let message = "";
+  try {
+    const body = (await res.json()) as { error?: string };
+    message = body?.error ?? "";
+  } catch {
+    /* body wasn't JSON */
+  }
+  if (res.status === 404 || /not found|pull/i.test(message)) {
+    return new EngineError(
+      `The local model "${model}" isn't downloaded yet. Download it from Settings, or run \`ollama pull ${model}\`.`,
+      "model_missing",
+    );
+  }
+  return new EngineError(message ? `Ollama: ${message}` : `Ollama request failed (HTTP ${res.status}).`, "unknown");
 }
 
 function unreachable(baseUrl: string): EngineError {
