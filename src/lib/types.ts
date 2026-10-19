@@ -15,7 +15,15 @@ export type SourceKind =
 /* "publik" = the metered publik API, provisioned by the app itself;
    "cloud" = the user's own key, unchanged. */
 export type EngineMode = "local" | "cloud" | "publik";
-export type Provider = "openai" | "anthropic" | "publik";
+export type Provider = "openai" | "anthropic" | "gemini" | "publik";
+
+/* The models a cloud provider runs. "strong" carries notes, flashcards,
+   quizzes and podcast scripts; "fast" carries chat, titles and topic lists.
+   Empty / missing = the provider's default. */
+export interface ModelChoice {
+  fast?: string;
+  strong?: string;
+}
 
 /* ---- Notes & content ---------------------------------------------------- */
 
@@ -30,8 +38,17 @@ export interface Note {
   sourceText: string;
   /* Optional origin metadata (url, filename, duration). */
   sourceMeta?: Record<string, string | number | undefined>;
+  /* Names of every uploaded file the note was generated from, in upload
+     order (only files that were read successfully). Missing on notes made
+     before this existed and on link/blank notes. */
+  sourceFiles?: string[];
   blocks: Block[];
+  /* The editor's rich document (Tiptap JSON): highlights, colours, alignment,
+     equations. When present it is the source of truth and `blocks` is derived
+     from it on every save; notes without it open from `blocks`. */
+  doc?: EditorDoc;
   folderId?: ID;
+  pinned?: boolean;
   createdAt: number;
   updatedAt: number;
   lastOpenedAt: number;
@@ -63,10 +80,23 @@ export interface Block {
   rows?: string[][]; // table
 }
 
+/* Serialized editor document (ProseMirror/Tiptap JSON). */
+export interface EditorDoc {
+  type: string;
+  content?: EditorDoc[];
+  [key: string]: unknown;
+}
+
+/* Folders nest via parentId (missing = top level). `color` is a key from
+   FOLDER_COLORS in lib/library.ts; missing on a subfolder = inherit the
+   parent's. `order` sorts siblings (lower first, then name). */
 export interface Folder {
   id: ID;
   name: string;
   createdAt: number;
+  parentId?: ID;
+  color?: string;
+  order?: number;
 }
 
 /* ---- Study tools -------------------------------------------------------- */
@@ -87,7 +117,7 @@ export interface Flashcard {
   state: "new" | "learning" | "review" | "relearning";
 }
 
-export type QuizType = "mcq" | "true_false" | "fill_blank";
+export type QuizType = "mcq" | "true_false" | "fill_blank" | "short_answer";
 
 export interface QuizQuestion {
   id: ID;
@@ -97,7 +127,10 @@ export interface QuizQuestion {
   difficulty: "basic" | "intermediate" | "exam";
   question: string;
   options: string[]; // mcq / true_false
-  correctIndex: number; // index into options; for fill_blank, 0 and options[0] is the answer
+  /* Index into options. For fill_blank and short_answer it is 0 and
+     options[0] is the answer (the model answer, for short_answer) — it arrives
+     with the question, so revealing it needs no second request. */
+  correctIndex: number;
   explanation: string;
 }
 
@@ -127,6 +160,9 @@ export interface Podcast {
   script: PodcastLine[];
   /* Object URL / data URL / file path of rendered audio, when available. */
   audioUrl?: string;
+  /* MIME type of that audio — "audio/mpeg" (OpenAI) or "audio/wav" (Gemini).
+     Missing on podcasts recorded before Gemini voices existed (all MP3). */
+  audioType?: string;
   createdAt: number;
 }
 
@@ -137,6 +173,8 @@ export interface ChatTurn {
   noteId: ID;
   role: "user" | "assistant";
   content: string;
+  /* Passage the user highlighted in the document and asked about. */
+  quote?: string;
   at: number;
 }
 
@@ -179,8 +217,15 @@ export interface EnginePrefs {
   /* null until the user makes an explicit choice at onboarding — NO default. */
   mode: EngineMode | null;
   onboarded: boolean;
-  /* Per-mode model selection; empty string = provider/engine default. */
+  /* Per-mode model selection; empty string = provider/engine default.
+     `cloudModel` is the legacy single override (both tiers, any provider);
+     `cloudModels` is what Settings writes, kept per provider so switching
+     keys never sends one provider's model id to another. */
   cloudModel?: string;
+  cloudModels?: Partial<Record<Provider, ModelChoice>>;
+  /* Which provider the "My own key" key belongs to; empty = detect from the
+     key's prefix. */
+  cloudProvider?: Provider | "";
   localModel?: string;
   language: string;
   /* The publik API disclosure_version the user accepted; 0 = never shown. */

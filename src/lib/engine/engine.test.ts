@@ -209,13 +209,15 @@ describe("AnthropicEngine", () => {
     await expect(engine.embed(["hello"])).rejects.toMatchObject({ kind: "unsupported" });
   });
 
-  it("capabilities() reports no transcription/tts/embeddings", () => {
+  it("capabilities() reports no transcription/tts/embeddings, but reads documents", () => {
     const engine = new AnthropicEngine("sk-ant-test");
     expect(engine.capabilities()).toEqual({
       chat: true,
       transcription: false,
       tts: false,
       embeddings: false,
+      vision: true,
+      visionPdf: true,
     });
   });
 
@@ -446,7 +448,7 @@ describe("OpenAIEngine as the publik provider", () => {
   });
 
   it("capabilities default to every line; a chat-only credential rejects audio/tts/embeddings before any fetch", async () => {
-    expect(publik().capabilities()).toEqual({ chat: true, transcription: true, tts: true, embeddings: true });
+    expect(publik().capabilities()).toEqual({ chat: true, transcription: true, tts: true, embeddings: true, vision: true });
     const fetchMock = mockFetch(async () => {
       throw new Error("should not be called");
     });
@@ -509,5 +511,38 @@ describe("OpenAIEngine as the publik provider", () => {
     expect(createEngine({ mode: "cloud", provider: "publik" })).toBeInstanceOf(OpenAIEngine);
     expect(createEngine({ mode: "cloud", provider: "publik" }).provider).toBe("publik");
     expect(() => createEngine({ mode: "cloud", provider: "openai" })).toThrow(EngineError);
+  });
+});
+
+describe("model choice per tier", () => {
+  it("OpenAI uses per-tier picks and max_completion_tokens; reasoning models drop temperature", async () => {
+    const fetchMock = mockFetch(async () => jsonResponse({ choices: [{ message: { content: "{}" } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const engine = createEngine({ mode: "cloud", provider: "openai", apiKey: "sk-test", models: { strong: "gpt-5" } });
+    const run = (tier: "fast" | "strong") =>
+      engine.structured({ messages: [{ role: "user", content: "x" }], schema: {}, schemaName: "s", tier, temperature: 0.3, maxTokens: 30 });
+
+    await run("strong");
+    const strong = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(strong.model).toBe("gpt-5");
+    expect(strong.temperature).toBeUndefined();
+    expect(strong.max_tokens).toBeUndefined();
+    expect(strong.max_completion_tokens).toBe(30 + 2048);
+
+    await run("fast");
+    const fast = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(fast.model).toBe("gpt-4o-mini"); // unpicked tier keeps the default
+    expect(fast.temperature).toBe(0.3);
+    expect(fast.max_completion_tokens).toBe(30);
+  });
+
+  it("Anthropic uses per-tier picks and falls back per tier", async () => {
+    const fetchMock = mockFetch(async () => jsonResponse({ content: [{ type: "tool_use", name: "s", input: {} }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const engine = createEngine({ mode: "cloud", provider: "anthropic", apiKey: "sk-ant-x", models: { fast: "claude-x-fast" } });
+    await engine.structured({ messages: [{ role: "user", content: "x" }], schema: {}, schemaName: "s", tier: "fast" });
+    await engine.structured({ messages: [{ role: "user", content: "x" }], schema: {}, schemaName: "s", tier: "strong" });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).model).toBe("claude-x-fast");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body)).model).toBe("claude-sonnet-4-5-20250929");
   });
 });

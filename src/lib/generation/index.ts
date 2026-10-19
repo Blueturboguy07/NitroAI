@@ -1,7 +1,7 @@
 /* Generation tasks. Each takes an Engine (cloud or local — identical interface)
    and returns domain objects. Persistence is the caller's job. */
 
-import type { Engine, ChatMessage, TokenHandler } from "../engine/types";
+import { EngineError, type Engine, type ChatMessage, type TokenHandler } from "../engine/types";
 import type {
   Block,
   ChatTurn,
@@ -14,9 +14,11 @@ import type {
 import { uuid, now } from "../ids";
 import { markdownToBlocks, plainText, stripFence } from "../markdown";
 import { newCardState } from "../study/fsrs";
-import { capTokens, chunkByTokens, estimateTokens } from "./chunk";
+import { capTokens, chunkByTokens, estimateTokens, lessonBudgets } from "./chunk";
+import { concatWav } from "../audio/wav";
 import {
   chatSystem,
+  quotedQuestion,
   flashcardsSchema,
   flashcardsSystem,
   noteReduceSystem,
@@ -27,6 +29,9 @@ import {
   podcastSystem,
   quizSchema,
   quizSystem,
+  sampleQuizSchema,
+  sampleQuizSystem,
+  sampleQuizUser,
   titleSystem,
   titleUser,
   topicsSchema,
@@ -38,13 +43,19 @@ import {
    backoff on top, so bigger docs just take longer — they never hard-fail. */
 const NOTE_CHUNK_TOKENS = 6000; // input per map request
 const STUDY_TOKENS = 8000; // grounding cap for cards/quiz/chat/podcast
+/* Shared by every lesson in a sample quiz: a little more than one note gets,
+   since it spans several, and still well under 30k TPM with the reply. */
+const SAMPLE_TOKENS = 12000;
 
 /* Study tools are generated from the *notes* (like Turbo), which are far smaller
    than a raw transcript; fall back to raw source only for a note with no body. */
-export function studyContent(note: Note): string {
+function studyText(note: Note): string {
   const body = plainText(note.blocks);
-  const base = body.trim() ? body : note.sourceText;
-  return capTokens(base, STUDY_TOKENS);
+  return body.trim() ? body : note.sourceText;
+}
+
+export function studyContent(note: Note): string {
+  return capTokens(studyText(note), STUDY_TOKENS);
 }
 
 /* The text used to ground generation: prefer the raw source; fall back to the
@@ -57,6 +68,27 @@ function cleanTitle(raw: string): string {
   const line = raw.replace(/["""]/g, "").split("\n")[0].trim();
   const words = line.split(/\s+/).slice(0, 8).join(" ");
   return words.replace(/[.,:;]+$/, "") || "Untitled Document";
+}
+
+/* ---- Answer checks ------------------------------------------------------ */
+
+const UNREADABLE = "The model returned an unreadable answer — try again, or pick another model in Settings.";
+
+/* An empty answer for a non-empty source would save a blank note that looks
+   like success. */
+function nonEmpty(blocks: Block[], sourceText: string): Block[] {
+  if (blocks.length === 0 && sourceText.trim()) {
+    throw new EngineError("The model returned empty notes — try again, or pick another model in Settings.", "unknown");
+  }
+  return blocks;
+}
+
+/* Structured answers are typed by schema, but a model can still drop a field
+   (or a non-strict provider can return something else entirely). */
+function listOf<T>(answer: unknown, key: string): T[] {
+  const value = answer && typeof answer === "object" ? (answer as Record<string, unknown>)[key] : undefined;
+  if (!Array.isArray(value)) throw new EngineError(UNREADABLE, "unknown");
+  return value as T[];
 }
 
 /* ---- Notes -------------------------------------------------------------- */
@@ -81,7 +113,7 @@ export async function generateNoteBody(
       },
       onToken,
     );
-    return markdownToBlocks(stripFence(md));
+    return nonEmpty(markdownToBlocks(stripFence(md)), sourceText);
   }
 
   // Large document: MAP — notes per section (sequential to respect TPM limits).
@@ -116,7 +148,7 @@ export async function generateNoteBody(
       /* keep the mapped section notes as-is */
     }
   }
-  return markdownToBlocks(combined);
+  return nonEmpty(markdownToBlocks(combined), sourceText);
 }
 
 export async function generateTitle(
@@ -140,23 +172,29 @@ export async function generateFlashcards(
   note: Note,
 ): Promise<Flashcard[]> {
   const content = studyContent(note);
-  const { topics } = await engine.structured<{ topics: string[] }>({
-    system: topicsSystem,
-    messages: [{ role: "user", content }],
-    schema: topicsSchema as unknown as Record<string, unknown>,
-    schemaName: "topics",
-    tier: "fast",
-  });
-  const { cards } = await engine.structured<{
-    cards: { front: string; back: string; topic: string }[];
-  }>({
-    system: flashcardsSystem(topics.length ? topics : ["General"]),
-    messages: [{ role: "user", content }],
-    schema: flashcardsSchema as unknown as Record<string, unknown>,
-    schemaName: "flashcards",
-    tier: "strong",
-  });
-  return cards.map((c) => ({
+  const topics = listOf<string>(
+    await engine.structured<{ topics: string[] }>({
+      system: topicsSystem,
+      messages: [{ role: "user", content }],
+      schema: topicsSchema as unknown as Record<string, unknown>,
+      schemaName: "topics",
+      tier: "fast",
+    }),
+    "topics",
+  );
+  const cards = listOf<{ front: string; back: string; topic: string }>(
+    await engine.structured<{
+      cards: { front: string; back: string; topic: string }[];
+    }>({
+      system: flashcardsSystem(topics.length ? topics : ["General"]),
+      messages: [{ role: "user", content }],
+      schema: flashcardsSchema as unknown as Record<string, unknown>,
+      schemaName: "flashcards",
+      tier: "strong",
+    }),
+    "cards",
+  );
+  return cards.filter((c) => c && c.front && c.back).map((c) => ({
     id: uuid(),
     noteId: note.id,
     front: c.front,
@@ -181,18 +219,62 @@ export async function generateQuiz(
 ): Promise<QuizQuestion[]> {
   const count = opts.count ?? 8;
   const difficulty = opts.difficulty ?? "intermediate";
-  const types = opts.types ?? ["mcq", "true_false", "fill_blank"];
+  const types = opts.types ?? ALL_QUIZ_TYPES;
   const content = studyContent(note);
-  const { questions } = await engine.structured<{
-    questions: Omit<QuizQuestion, "id" | "noteId">[];
-  }>({
-    system: quizSystem({ count, difficulty, types }),
-    messages: [{ role: "user", content }],
-    schema: quizSchema as unknown as Record<string, unknown>,
-    schemaName: "quiz",
-    tier: "strong",
-  });
+  const questions = listOf<Omit<QuizQuestion, "id" | "noteId">>(
+    await engine.structured<{
+      questions: Omit<QuizQuestion, "id" | "noteId">[];
+    }>({
+      system: quizSystem({ count, difficulty, types }),
+      messages: [{ role: "user", content }],
+      schema: quizSchema as unknown as Record<string, unknown>,
+      schemaName: "quiz",
+      tier: "strong",
+    }),
+    "questions",
+  );
   return questions.map((q) => ({ ...q, id: uuid(), noteId: note.id }));
+}
+
+export const ALL_QUIZ_TYPES: QuizType[] = ["mcq", "true_false", "fill_blank", "short_answer"];
+
+/* One quiz across several lessons (notes), in a single request. Each lesson
+   gets a share of SAMPLE_TOKENS; every question comes back tagged with its
+   lesson and is attributed to that note. */
+export async function generateSampleQuiz(
+  engine: Engine,
+  notes: Note[],
+  opts: QuizOptions = {},
+): Promise<QuizQuestion[]> {
+  const count = opts.count ?? 10;
+  const difficulty = opts.difficulty ?? "intermediate";
+  const types = opts.types ?? ALL_QUIZ_TYPES;
+  const texts = notes.map(studyText);
+  const budgets = lessonBudgets(texts.map(estimateTokens), SAMPLE_TOKENS);
+  const lessons = notes
+    .map((note, i) => ({ note, title: note.title, content: capTokens(texts[i], budgets[i] ?? 0).trim() }))
+    .filter((l) => l.content);
+  if (!lessons.length) {
+    throw new EngineError("The selected lessons have no notes to quiz on yet.", "unknown");
+  }
+  const questions = listOf<Omit<QuizQuestion, "id" | "noteId"> & { lesson: number }>(
+    await engine.structured<{
+      questions: (Omit<QuizQuestion, "id" | "noteId"> & { lesson: number })[];
+    }>({
+      system: sampleQuizSystem({ count, difficulty, types, lessons: lessons.length }),
+      messages: [{ role: "user", content: sampleQuizUser(lessons) }],
+      schema: sampleQuizSchema as unknown as Record<string, unknown>,
+      schemaName: "sample_quiz",
+      tier: "strong",
+    }),
+    "questions",
+  );
+  return questions.map(({ lesson, ...q }) => ({
+    ...q,
+    id: uuid(),
+    // A lesson number outside the list falls back to the first lesson.
+    noteId: (lessons[lesson - 1] ?? lessons[0]).note.id,
+  }));
 }
 
 /* ---- Chat --------------------------------------------------------------- */
@@ -202,11 +284,15 @@ export async function chatAnswer(
   note: Note,
   history: ChatTurn[],
   question: string,
+  quote?: string,
   onToken?: TokenHandler,
 ): Promise<string> {
+  // Earlier turns keep their quoted passage so follow-ups ("simpler?") still
+  // know what "this" refers to.
+  const ask = (q: string, quoted?: string) => (quoted ? quotedQuestion(q, quoted) : q);
   const messages: ChatMessage[] = [
-    ...history.map((h) => ({ role: h.role, content: h.content })),
-    { role: "user" as const, content: question },
+    ...history.map((h) => ({ role: h.role, content: ask(h.content, h.quote) })),
+    { role: "user" as const, content: ask(question, quote) },
   ];
   return engine.complete(
     {
@@ -227,23 +313,27 @@ export async function generatePodcastScript(
   length: "short" | "medium" | "long" = "short",
 ): Promise<Podcast> {
   const content = studyContent(note);
-  const { lines } = await engine.structured<{
-    lines: { speaker: "host" | "guest"; text: string; spoken: string }[];
-  }>({
-    system: podcastSystem(length),
-    messages: [{ role: "user", content }],
-    schema: podcastSchema as unknown as Record<string, unknown>,
-    schemaName: "podcast",
-    tier: "strong",
-  });
+  const lines = listOf<{ speaker: "host" | "guest"; text: string; spoken: string }>(
+    await engine.structured<{
+      lines: { speaker: "host" | "guest"; text: string; spoken: string }[];
+    }>({
+      system: podcastSystem(length),
+      messages: [{ role: "user", content }],
+      schema: podcastSchema as unknown as Record<string, unknown>,
+      schemaName: "podcast",
+      tier: "strong",
+    }),
+    "lines",
+  );
   return { id: uuid(), noteId: note.id, length, script: lines, createdAt: now() };
 }
 
 export const DEFAULT_VOICES = { host: "alloy", guest: "nova" } as const;
 
 /* Synthesize each line with its speaker's voice and concatenate to one clip.
-   Throws EngineError (kind "unsupported"/"model_missing") if the active engine
-   has no TTS — the UI surfaces that cleanly. */
+   MP3 clips (OpenAI) are glued byte-for-byte; WAV clips (Gemini) are re-wrapped
+   under one header. Throws EngineError (kind "unsupported"/"model_missing") if
+   the active engine has no TTS — the UI surfaces that cleanly. */
 export async function synthesizePodcastAudio(
   engine: Engine,
   podcast: Podcast,
@@ -259,5 +349,6 @@ export async function synthesizePodcastAudio(
     });
     parts.push(blob);
   }
+  if (parts.length > 0 && parts.every((p) => p.type === "audio/wav")) return concatWav(parts);
   return new Blob(parts, { type: "audio/mpeg" });
 }

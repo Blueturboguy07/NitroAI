@@ -10,6 +10,8 @@ const defaults: EnginePrefs = {
   mode: null,
   onboarded: false,
   cloudModel: "",
+  cloudModels: {},
+  cloudProvider: "",
   localModel: "",
   language: "English",
   publikDisclosureAck: 0,

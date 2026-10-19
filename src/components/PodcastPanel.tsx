@@ -17,6 +17,23 @@ import type { Note, Podcast } from "../lib/types";
 
 type Length = Podcast["length"];
 
+/* What the podcasts collection actually holds. The audio is persisted as the
+   Blob itself (IndexedDB stores Blobs natively); an object URL is minted from
+   it each time the panel loads and revoked when it unmounts. Records written
+   before this stored a `blob:` URL in audioUrl — those died with the page that
+   made them, so they are treated as "no audio yet". */
+type StoredPodcast = Podcast & { audioBlob?: Blob };
+
+/* A playable URL for a stored podcast, or null when it has no usable audio. */
+function playableUrl(p: StoredPodcast | null): string | null {
+  if (!p) return null;
+  if (typeof Blob !== "undefined" && p.audioBlob instanceof Blob) {
+    return URL.createObjectURL(p.audioBlob);
+  }
+  if (p.audioUrl && !p.audioUrl.startsWith("blob:")) return p.audioUrl;
+  return null;
+}
+
 const LENGTHS: { key: Length; label: string }[] = [
   { key: "short", label: "Short" },
   { key: "medium", label: "Medium" },
@@ -39,7 +56,11 @@ export default function PodcastPanel({ note }: { note: Note }) {
   const { repo, engine } = useApp();
 
   const [loaded, setLoaded] = useState(false);
-  const [podcast, setPodcast] = useState<Podcast | null>(null);
+  const [podcast, setPodcast] = useState<StoredPodcast | null>(null);
+  /* The live URL for the current audio (an object URL we own, or a stored
+     data:/file URL). Revoked whenever it is replaced and on unmount. */
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  useEffect(() => () => revoke(audioUrl ?? undefined), [audioUrl]);
   const [length, setLength] = useState<Length>("short");
 
   const [generating, setGenerating] = useState(false);
@@ -52,6 +73,7 @@ export default function PodcastPanel({ note }: { note: Note }) {
   useEffect(() => {
     setLoaded(false);
     setPodcast(null);
+    setAudioUrl(null);
     setScriptError(null);
     setAudioError(null);
     if (!repo) return;
@@ -59,10 +81,11 @@ export default function PodcastPanel({ note }: { note: Note }) {
     (async () => {
       const list = await repo.podcastsFor(note.id);
       if (!alive) return;
-      const latest = list.length
+      const latest: StoredPodcast | null = list.length
         ? [...list].sort((a, b) => b.createdAt - a.createdAt)[0]
         : null;
       setPodcast(latest);
+      setAudioUrl(playableUrl(latest));
       if (latest) setLength(latest.length);
       setLoaded(true);
     })();
@@ -81,11 +104,10 @@ export default function PodcastPanel({ note }: { note: Note }) {
     setGenerating(true);
     try {
       const result = await generatePodcastScript(engine, note, length);
-      if (repo) await repo.putPodcast(result);
-      setPodcast((prev) => {
-        revoke(prev?.audioUrl);
-        return result;
-      });
+      // Replace, don't append: older scripts (and their audio Blobs) go.
+      if (repo) await repo.replacePodcast(note.id, result);
+      setPodcast(result);
+      setAudioUrl(null);
     } catch (e) {
       setScriptError(
         e instanceof EngineError
@@ -103,13 +125,16 @@ export default function PodcastPanel({ note }: { note: Note }) {
     setAudioGenerating(true);
     try {
       const blob = await synthesizePodcastAudio(engine, podcast);
-      const url = URL.createObjectURL(blob);
-      const updated: Podcast = { ...podcast, audioUrl: url };
+      // Persist the Blob, never an object URL (that dies on reload).
+      const updated: StoredPodcast = {
+        ...podcast,
+        audioUrl: undefined,
+        audioBlob: blob,
+        audioType: blob.type,
+      };
       if (repo) await repo.putPodcast(updated);
-      setPodcast((prev) => {
-        if (prev?.audioUrl !== url) revoke(prev?.audioUrl);
-        return updated;
-      });
+      setPodcast(updated);
+      setAudioUrl(URL.createObjectURL(blob));
     } catch (e) {
       setAudioError(
         e instanceof EngineError
@@ -258,7 +283,7 @@ export default function PodcastPanel({ note }: { note: Note }) {
 
                 {ttsAvailable ? (
                   <div className="mt-4 flex flex-col gap-3">
-                    {!podcast.audioUrl && (
+                    {!audioUrl && (
                       <button
                         onClick={handleGenerateAudio}
                         disabled={audioGenerating}
@@ -281,21 +306,21 @@ export default function PodcastPanel({ note }: { note: Note }) {
 
                     <ErrorNotice err={audioError} />
 
-                    {podcast.audioUrl && (
+                    {audioUrl && (
                       <div className="flex flex-col gap-3">
                         <audio
                           controls
-                          src={podcast.audioUrl}
+                          src={audioUrl}
                           className="w-full"
                         />
                         <div className="flex items-center gap-2">
                           <a
-                            href={podcast.audioUrl}
-                            download={`${note.title || "podcast"}.mp3`}
+                            href={audioUrl}
+                            download={`${note.title || "podcast"}.${podcast.audioType === "audio/wav" ? "wav" : "mp3"}`}
                             className="flex w-fit items-center gap-2 rounded-xl border border-edge bg-card px-4 py-2 text-sm font-semibold text-ink-dim shadow-soft hover:text-ink"
                           >
                             <Download className="size-4" />
-                            Download MP3
+                            Download {podcast.audioType === "audio/wav" ? "WAV" : "MP3"}
                           </a>
                           <button
                             onClick={handleGenerateAudio}
@@ -317,8 +342,8 @@ export default function PodcastPanel({ note }: { note: Note }) {
                   </div>
                 ) : (
                   <p className="mt-3 text-sm text-ink-faint">
-                    Audio generation needs an OpenAI key or local Kokoro
-                    voices — the script is ready to read above.
+                    Audio generation needs an OpenAI or Gemini key — the
+                    script is ready to read above.
                   </p>
                 )}
               </div>

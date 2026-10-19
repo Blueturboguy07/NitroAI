@@ -11,6 +11,12 @@ import path from "node:path";
 import { startServer } from "./httpServer.mjs";
 import { DISCLOSURE_VERSION, readCredentialFile } from "./publik.mjs";
 
+/* The app's renderer sends X-NitroAI: 1 on every /api/* call and the server
+   refuses calls without it (requestGuard.mjs) — so these tests do too. The
+   caller checks themselves are covered in security.test.mjs. */
+const fetch = (input, init = {}) =>
+  globalThis.fetch(input, { ...init, headers: { "x-nitroai": "1", ...(init.headers ?? {}) } });
+
 const TOKEN = "pat_nitroai_k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g7";
 const KEY = "pk_live_a8k2m9x4q7v1_h3n6r9t2w5y8z1b4c7d0f3g6j9k2m5p8";
 const KEY2 = "pk_live_b9l3n0y5r8w2_i4o7s0u3x6z9a2c5d8e1f4g7h0j3k6l9";

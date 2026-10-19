@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FileAudio, FileText, Info, Link2, Upload, X } from "lucide-react";
+import { AlertCircle, FileAudio, FileText, Info, Link2, Upload, X } from "lucide-react";
 import type { IngestInput } from "../lib/ingest";
 import { isYoutube } from "../lib/ingest/youtube";
 import type { Engine } from "../lib/engine/types";
@@ -14,22 +14,55 @@ const meta: Record<NoteSource, { icon: typeof Link2; iconBg: string }> = {
   audio: { icon: FileAudio, iconBg: "bg-accent" },
 };
 
-function kindForFile(name: string): SourceKind {
-  const ext = name.toLowerCase().split(".").pop();
-  if (ext === "pdf") return "pdf";
-  if (ext === "docx" || ext === "doc") return "docx";
-  return "text";
+/* Only formats ingestion can actually read. Anything else used to fall
+   through to "text" and send binary garbage (an image, a .pptx) to the model;
+   drag-and-drop skips the picker's accept filter, so this is the real gate. */
+const DOCUMENT_KINDS: Record<string, SourceKind> = {
+  pdf: "pdf",
+  docx: "docx",
+  txt: "text",
+  md: "text",
+  markdown: "text",
+};
+const AUDIO_EXTS = new Set(["mp3", "m4a", "wav", "aac", "flac", "ogg", "oga", "opus", "webm", "mp4", "mov", "m4v", "mpeg", "mpga", "aiff", "aif"]);
+
+function extOf(name: string): string {
+  const parts = name.toLowerCase().split(".");
+  return parts.length > 1 ? (parts.pop() ?? "") : "";
+}
+
+function kindForFile(name: string): SourceKind | null {
+  return DOCUMENT_KINDS[extOf(name)] ?? null;
+}
+
+function isAudioFile(file: File): boolean {
+  return /^(audio|video)\//.test(file.type) || AUDIO_EXTS.has(extOf(file.name));
+}
+
+/* Why a picked file can't be used, or null when it can. */
+function rejectReason(file: File, source: NoteSource): string | null {
+  if (source === "audio") {
+    return isAudioFile(file) ? null : "isn't an audio or video file";
+  }
+  const ext = extOf(file.name);
+  if (ext === "doc") return "is an old Word .doc — save it as .docx or PDF first";
+  if (ext === "ppt" || ext === "pptx" || ext === "key") return "is a slide deck — export it as PDF first";
+  return kindForFile(file.name) ? null : "isn't a PDF, Word (.docx), .txt or .md file";
 }
 
 export default function CreateNoteModal({
   source,
   busy,
   engine,
+  initialFiles,
   onGenerate,
   onClose,
 }: {
   source: NoteSource;
   busy?: boolean;
+  /* Files picked last time, kept after a failed run so they needn't be
+     picked again. */
+  initialFiles?: File[];
   /* Used only to show an upfront "add a cloud key" hint for audio when the
      active engine can't transcribe (local mode has no speech-to-text yet) —
      surfacing that before the upload, not just as a failure afterward. */
@@ -38,7 +71,8 @@ export default function CreateNoteModal({
   onClose: () => void;
 }) {
   const [url, setUrl] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
+  const [files, setFiles] = useState<File[]>(initialFiles ?? []);
+  const [rejected, setRejected] = useState<string[]>([]);
   const { icon: Icon, iconBg } = meta[source];
   const ready = source === "link" ? url.trim().length > 0 : files.length > 0;
   const canTranscribe = !engine || supportsTask(engine, "transcription");
@@ -50,11 +84,24 @@ export default function CreateNoteModal({
       onGenerate([{ kind: isYoutube(u) ? "youtube" : "url", url: u }]);
     } else if (source === "document") {
       onGenerate(
-        files.map((f) => ({ kind: kindForFile(f.name), file: f, filename: f.name })),
+        files.map((f) => ({ kind: kindForFile(f.name) ?? "text", file: f, filename: f.name })),
       );
     } else {
       onGenerate(files.map((f) => ({ kind: "audio", file: f, filename: f.name })));
     }
+  }
+
+  /* Keep the readable picks; list the rest with the reason. */
+  function addFiles(picked: File[]) {
+    const ok: File[] = [];
+    const bad: string[] = [];
+    for (const f of picked) {
+      const reason = rejectReason(f, source);
+      if (reason) bad.push(`${f.name} ${reason}.`);
+      else if (!files.some((g) => g.name === f.name && g.size === f.size)) ok.push(f);
+    }
+    setFiles([...files, ...ok]);
+    setRejected(bad);
   }
 
   return (
@@ -96,10 +143,12 @@ export default function CreateNoteModal({
 
         {source === "document" && (
           <Dropzone
-            label="Drag documents here, or click to upload"
-            accept=".pdf,.doc,.docx,.txt,.md"
-            onFiles={setFiles}
+            label="Drag documents here, or click to upload (PDF, Word .docx, .txt, .md)"
+            accept=".pdf,.docx,.txt,.md,.markdown"
+            onFiles={addFiles}
             files={files}
+            onRemove={(i) => setFiles(files.filter((_, j) => j !== i))}
+            rejected={rejected}
           />
         )}
 
@@ -112,14 +161,16 @@ export default function CreateNoteModal({
                   {engine?.provider === "publik" ? (
                     <>
                       publik API isn't carrying audio transcription for this install
-                      right now. Add your own OpenAI key in Settings for audio and
-                      YouTube-without-captions.
+                      right now. Add your own OpenAI or Gemini key in Settings for
+                      audio and YouTube-without-captions.
                     </>
                   ) : (
                     <>
-                      Local mode can't transcribe audio yet — there's no separate
-                      "Whisper" setting to connect. Add an OpenAI key in Settings (or
-                      switch to publik API) and NitroAI transcribes automatically.
+                      {engine?.provider === "anthropic"
+                        ? "Anthropic keys can't transcribe audio."
+                        : "Local mode can't transcribe audio yet — there's no separate \"Whisper\" setting to connect."}{" "}
+                      Add an OpenAI or Gemini key in Settings (or switch to publik API)
+                      and NitroAI transcribes automatically.
                     </>
                   )}
                 </span>
@@ -128,8 +179,10 @@ export default function CreateNoteModal({
             <Dropzone
               label="Drag an audio file here, or click to upload (MP3, WAV, M4A, etc.)"
               accept="audio/*,video/*"
-              onFiles={setFiles}
+              onFiles={addFiles}
               files={files}
+              onRemove={(i) => setFiles(files.filter((_, j) => j !== i))}
+              rejected={rejected}
             />
           </>
         )}
@@ -155,46 +208,83 @@ function Dropzone({
   accept,
   files,
   onFiles,
+  onRemove,
+  rejected,
 }: {
   label: string;
   accept: string;
   files: File[];
+  /* Newly picked/dropped files (the caller filters and appends them). */
   onFiles: (f: File[]) => void;
+  onRemove: (index: number) => void;
+  rejected: string[];
 }) {
   const [drag, setDrag] = useState(false);
 
   return (
-    <label
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDrag(true);
-      }}
-      onDragLeave={() => setDrag(false)}
-      onDrop={(e) => {
-        e.preventDefault();
-        setDrag(false);
-        onFiles([...files, ...Array.from(e.dataTransfer.files)]);
-      }}
-      className={`flex min-h-36 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-sm ${
-        drag ? "border-accent bg-accent-softer" : "border-edge bg-panel text-ink-faint"
-      }`}
-    >
-      <input
-        type="file"
-        multiple
-        accept={accept}
-        className="hidden"
-        onChange={(e) => onFiles([...files, ...Array.from(e.target.files ?? [])])}
-      />
-      <span className="flex items-center gap-2">
-        <Upload className="size-4" />
-        {label}
-      </span>
-      {files.length > 0 && (
-        <span className="font-semibold text-ink">
-          {files.length} file{files.length > 1 ? "s" : ""} selected
+    <>
+      <label
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDrag(true);
+        }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDrag(false);
+          onFiles(Array.from(e.dataTransfer.files));
+        }}
+        className={`flex min-h-36 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-center text-sm ${
+          drag ? "border-accent bg-accent-softer" : "border-edge bg-panel text-ink-faint"
+        }`}
+      >
+        <input
+          type="file"
+          multiple
+          accept={accept}
+          className="hidden"
+          onChange={(e) => {
+            onFiles(Array.from(e.target.files ?? []));
+            e.target.value = ""; // picking the same file again still fires
+          }}
+        />
+        <span className="flex items-center gap-2">
+          <Upload className="size-4 shrink-0" />
+          {label}
         </span>
+      </label>
+      {files.length > 0 && (
+        <ul className="mt-3 max-h-40 space-y-1 overflow-y-auto" aria-label="Selected files">
+          {files.map((f, i) => (
+            <li
+              key={`${f.name}-${f.size}-${i}`}
+              className="flex items-center gap-2 rounded-lg border border-edge bg-panel px-3 py-1.5 text-sm"
+            >
+              <span className="min-w-0 flex-1 truncate font-semibold text-ink">{f.name}</span>
+              <button
+                type="button"
+                onClick={() => onRemove(i)}
+                aria-label={`Remove ${f.name}`}
+                className="shrink-0 rounded p-0.5 text-ink-faint hover:bg-card-hover hover:text-ink"
+              >
+                <X className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
-    </label>
+      {rejected.length > 0 && (
+        <div role="alert" className="mt-3 flex items-start gap-2 text-xs font-semibold text-danger-ink">
+          <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+          <span>
+            {rejected.map((r, i) => (
+              <span key={i} className="block">
+                Skipped {r}
+              </span>
+            ))}
+          </span>
+        </div>
+      )}
+    </>
   );
 }

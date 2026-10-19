@@ -71,4 +71,68 @@ describe("Dashboard — New Folder", () => {
     const repo = await getRepo();
     expect(await repo.listFolders()).toEqual([]);
   });
+
+  it("deleting a folder keeps its notes and moves them up a level", async () => {
+    const { AppProvider, getRepo } = await import("../lib/app");
+    const { default: Dashboard } = await import("./Dashboard");
+    const repo = await getRepo();
+    await repo.putFolder({ id: "bio", name: "Biology", createdAt: 0, color: "grass" });
+    await repo.putNote({
+      id: "cells",
+      title: "Cell membranes",
+      sourceKind: "blank",
+      sourceText: "",
+      blocks: [],
+      folderId: "bio",
+      createdAt: 0,
+      updatedAt: 0,
+      lastOpenedAt: 0,
+    });
+
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter initialEntries={["/?folder=bio"]}>
+        <AppProvider>
+          <Dashboard />
+        </AppProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Biology" })).toBeInTheDocument();
+    expect(screen.getByText("Cell membranes")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Biology options" }));
+    await user.click(await screen.findByRole("menuitem", { name: /delete folder, keep its notes/i }));
+
+    expect(await repo.listFolders()).toEqual([]);
+    expect((await repo.getNote("cells"))?.folderId).toBeUndefined();
+  });
+
+  it("shows the files a note was generated from on its card", async () => {
+    const { AppProvider, getRepo } = await import("../lib/app");
+    const { default: Dashboard } = await import("./Dashboard");
+    const repo = await getRepo();
+    await repo.putNote({
+      id: "waves",
+      title: "Wave mechanics",
+      sourceKind: "pdf",
+      sourceText: "",
+      sourceFiles: ["lecture-07.pdf", "slides-07.pdf"],
+      blocks: [],
+      createdAt: 0,
+      updatedAt: 0,
+      lastOpenedAt: 0,
+    });
+
+    render(
+      <MemoryRouter>
+        <AppProvider>
+          <Dashboard />
+        </AppProvider>
+      </MemoryRouter>,
+    );
+
+    const label = await screen.findByText("lecture-07.pdf +1 more");
+    expect(label.parentElement).toHaveAttribute("title", "lecture-07.pdf\nslides-07.pdf");
+  });
 });

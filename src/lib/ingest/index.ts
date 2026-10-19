@@ -26,6 +26,20 @@ export interface IngestResult {
   audio?: Blob;
 }
 
+/* A source that opened fine but has nothing NitroAI can use (an empty file, a
+   scanned PDF the current engine can't read). The message is written for the
+   user and says what to do; `fix: "settings"` means changing the engine in
+   Settings would solve it, so the UI can offer a button. */
+export class SourceError extends Error {
+  constructor(
+    message: string,
+    readonly fix?: "settings",
+  ) {
+    super(message);
+    this.name = "SourceError";
+  }
+}
+
 function titleFromFilename(filename: string): string {
   return filename
     .replace(/\.[^./\\]+$/, "")
@@ -51,8 +65,18 @@ export async function ingest(input: IngestInput): Promise<IngestResult> {
     case "blank":
       return { text: "" };
 
-    case "text":
-      return ingestText(input.text ?? "");
+    case "text": {
+      /* Uploaded .txt/.md files arrive as a file; pasted text as `text`. */
+      if (!input.file) return ingestText(input.text ?? "");
+      const raw = await input.file.text();
+      /* Drag-and-drop skips the picker's accept filter, so an image or other
+         binary can arrive here; NUL bytes never occur in real text files. */
+      if (raw.includes("\u0000")) {
+        throw new Error("This isn't a text file. Upload a PDF, Word (.docx), .txt or .md file.");
+      }
+      const { text } = ingestText(raw);
+      return withFilenameFallback({ text }, input.filename);
+    }
 
     case "url": {
       if (!input.url) throw new Error("A URL is required to ingest a web page.");
@@ -72,7 +96,7 @@ export async function ingest(input: IngestInput): Promise<IngestResult> {
 
     case "docx": {
       if (!input.file) throw new Error("A DOCX file is required.");
-      const result = await ingestDocx(input.file);
+      const result = await ingestDocx(input.file, input.filename);
       return withFilenameFallback(result, input.filename);
     }
 

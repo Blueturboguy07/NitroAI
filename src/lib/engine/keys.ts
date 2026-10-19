@@ -8,13 +8,33 @@ import type { Provider } from "../types";
    paste one from their publikhq.com dashboard into the same field. */
 export const PUBLIK_KEY_FORMAT = /^pk_(live|test)_[a-z0-9]{12}_[a-z0-9]{32}$/;
 
+/* Google AI Studio (Gemini API) keys. Older standard keys are "AIza" + 35
+   URL-safe characters; since 2026 AI Studio only issues auth keys, which
+   start "AQ." and run longer. Both go in the same x-goog-api-key header. */
+export const GEMINI_KEY_FORMAT = /^(AIza[0-9A-Za-z_-]{30,}|AQ\.[0-9A-Za-z_.-]{20,})$/;
+
 export function detectProvider(key: string): Provider | null {
   const k = key.trim();
   if (PUBLIK_KEY_FORMAT.test(k)) return "publik";
+  if (GEMINI_KEY_FORMAT.test(k)) return "gemini";
   if (k.startsWith("sk-ant-")) return "anthropic";
   if (k.startsWith("sk-")) return "openai";
   return null;
 }
+
+/* The provider a "My own key" key is used with: the one the user picked in
+   Settings, else whatever the prefix says. */
+export function resolveProvider(key: string, chosen?: Provider | ""): Provider | null {
+  if (chosen) return key.trim() ? chosen : null;
+  return detectProvider(key);
+}
+
+export const PROVIDER_LABELS: Record<Provider, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  gemini: "Google Gemini",
+  publik: "publik API",
+};
 
 const LS_KEY = "nitroai.apikey";
 

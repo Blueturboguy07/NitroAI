@@ -7,16 +7,21 @@ import {
   Palette,
   PenLine,
   Settings as SettingsIcon,
+  Shuffle,
 } from "lucide-react";
 import { toggleTheme } from "../lib/theme";
+import FolderTree from "./library/FolderTree";
+import { useLibrary } from "./library/useLibrary";
 
 const navItems = [
   { to: "/", label: "Dashboard", icon: Home },
+  { to: "/quiz", label: "Sample quiz", icon: Shuffle },
   { to: "/settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export default function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
+  const lib = useLibrary();
 
   return (
     <div className="flex h-full bg-bg">
@@ -63,9 +68,13 @@ export default function AppShell() {
           ))}
         </nav>
 
-        <div className="mt-auto flex flex-col gap-1 px-3 pb-4">
+        <FolderTree lib={lib} collapsed={collapsed} />
+
+        <div className="flex flex-col gap-1 border-t border-edge px-3 pt-3 pb-4">
           <button
             onClick={() => toggleTheme()}
+            aria-label="Toggle theme"
+            title={collapsed ? "Toggle theme" : undefined}
             className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold text-ink-dim hover:bg-card-hover hover:text-ink"
           >
             <Palette className="size-4.5 shrink-0" />

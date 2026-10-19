@@ -23,6 +23,13 @@ function stubServer(status: Record<string, unknown>, onProvision?: (body: unknow
         return json(onProvision ? onProvision(body) : { ok: true, minted: true, ...status, state: "ready" });
       }
       if (url.startsWith("/api/local/status")) return json({ installed: false, serving: false, hasChatModel: false, hasEmbedModel: false, models: [] });
+      if (url === "https://api.openai.com/v1/models") return json({ data: [] });
+      if (url.startsWith("https://generativelanguage.googleapis.com/")) {
+        const key = (init?.headers as Record<string, string>)?.["x-goog-api-key"];
+        return key === "AQ.bad-key-0123456789abcdef"
+          ? new Response(JSON.stringify({ error: { code: 400, message: "API key not valid." } }), { status: 400 })
+          : json({ models: [] });
+      }
       return new Response("not found", { status: 404 });
     }),
   );
@@ -197,12 +204,51 @@ describe("Onboarding — publik API default", () => {
     const user = userEvent.setup();
     await screen.findByRole("button", { name: "Continue with publik API" });
     await user.click(screen.getByRole("button", { name: "Use my own key instead" }));
-    const input = await screen.findByPlaceholderText("sk-... or sk-ant-...");
+    const input = await screen.findByPlaceholderText(/AIza… \(Google Gemini\)/);
     await user.type(input, "sk-my-own");
     await user.click(screen.getByRole("button", { name: "Get started" }));
     await waitFor(() => expect(localStorage.getItem("nitroai.apikey")).toBe("sk-my-own"));
     expect(JSON.parse(localStorage.getItem("nitroai.prefs")!)).toMatchObject({ mode: "cloud", onboarded: true });
     expect(calls.filter((c) => c.url === "/api/publik/provision")).toHaveLength(0);
+  });
+
+  it("a new-style Gemini key (AQ.…) is recognised, checked and saved", async () => {
+    stubServer({ available: false, state: "unprovisioned", baseUrl: "/api/publik/v1" });
+    await renderOnboarding();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /Bring your own key/ }));
+    await user.type(screen.getByPlaceholderText(/Google Gemini/), "AQ.Ab8RN6Lxk2_good-key-0123456789");
+    expect(screen.getByRole("combobox")).toHaveDisplayValue("Auto-detect (Google Gemini)");
+    await user.click(screen.getByRole("button", { name: "Get started" }));
+    await waitFor(() => expect(localStorage.getItem("nitroai.apikey")).toBe("AQ.Ab8RN6Lxk2_good-key-0123456789"));
+    expect(JSON.parse(localStorage.getItem("nitroai.prefs")!)).toMatchObject({ mode: "cloud", onboarded: true });
+  });
+
+  it("an unrecognised key asks which company it's from instead of staying stuck", async () => {
+    stubServer({ available: false, state: "unprovisioned", baseUrl: "/api/publik/v1" });
+    await renderOnboarding();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /Bring your own key/ }));
+    await user.type(screen.getByPlaceholderText(/Google Gemini/), "some-future-key-format");
+    expect(screen.getByText("Which company is this key from?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Get started" })).toBeDisabled();
+    await user.selectOptions(screen.getByRole("combobox"), "gemini");
+    expect(screen.getByRole("button", { name: "Get started" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Get started" }));
+    await waitFor(() => expect(localStorage.getItem("nitroai.apikey")).toBe("some-future-key-format"));
+    expect(JSON.parse(localStorage.getItem("nitroai.prefs")!)).toMatchObject({ mode: "cloud", cloudProvider: "gemini" });
+  });
+
+  it("a key the provider rejects shows the reason and isn't saved", async () => {
+    stubServer({ available: false, state: "unprovisioned", baseUrl: "/api/publik/v1" });
+    await renderOnboarding();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /Bring your own key/ }));
+    await user.type(screen.getByPlaceholderText(/Google Gemini/), "AQ.bad-key-0123456789abcdef");
+    await user.click(screen.getByRole("button", { name: "Get started" }));
+    expect(await screen.findByText(/Invalid Gemini API key/)).toBeInTheDocument();
+    expect(localStorage.getItem("nitroai.apikey")).toBeNull();
+    expect(screen.getByRole("button", { name: "Get started" })).toBeEnabled();
   });
 
   it("a failed mint keeps the user on the page with an explanation and no prefs written", async () => {

@@ -33,7 +33,8 @@ module.exports = {
   copyright: "NitroAI contributors",
   // Publishing is handled by the release workflow, not electron-builder.
   publish: null,
-  files: ["dist/**", "server/**", "electron/**", "!**/*.map"],
+  // Tests never ship: they're dev-only and import vitest.
+  files: ["dist/**", "server/**", "electron/**", "!**/*.map", "!server/**/*.test.mjs"],
   extraMetadata: {
     main: "electron/main.mjs",
     // Identifies this app build to publikhq.com so a fresh install can mint its

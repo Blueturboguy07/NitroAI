@@ -32,6 +32,10 @@ export interface DesiredModels {
   embedModel?: string;
 }
 
+/* Sent on every call to the app's own /api/* routes; the local server refuses
+   requests without it (see server/requestGuard.mjs). */
+const API_HEADERS = { "X-NitroAI": "1" };
+
 function query(desired?: DesiredModels): string {
   const params = new URLSearchParams();
   if (desired?.chatModel) params.set("chatModel", desired.chatModel);
@@ -53,6 +57,7 @@ export async function localSetupStatus(desired?: DesiredModels): Promise<{
 } | null> {
   try {
     const res = await fetch(`/api/local/status${query(desired)}`, {
+      headers: API_HEADERS,
       signal: AbortSignal.timeout(2500),
     });
     if (!res.ok) return null;
@@ -75,7 +80,8 @@ export async function runLocalSetup(
   signal?: AbortSignal,
   desired?: DesiredModels,
 ): Promise<void> {
-  const res = await fetch(`/api/local/setup${query(desired)}`, { signal });
+  // POST: provisioning installs software and pulls models — never a GET.
+  const res = await fetch(`/api/local/setup${query(desired)}`, { method: "POST", headers: API_HEADERS, signal });
   if (!res.ok || !res.body) throw new Error(`Local setup unavailable (${res.status}).`);
 
   const reader = res.body.getReader();

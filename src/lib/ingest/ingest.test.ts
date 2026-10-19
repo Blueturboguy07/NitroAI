@@ -101,6 +101,14 @@ describe("ingest() routing", () => {
     expect(result.title).toBeUndefined();
   });
 
+  it("reads an uploaded .txt/.md file for 'text'", async () => {
+    const file = new Blob(["\n# Week 3\n\nMitosis has four phases.\n"], { type: "text/markdown" });
+    const result = await ingest({ kind: "text", file, filename: "biology-notes.md" });
+    expect(result.text).toBe("# Week 3\n\nMitosis has four phases.");
+    expect(result.title).toBe("biology-notes");
+    expect(result.meta?.filename).toBe("biology-notes.md");
+  });
+
   it("routes 'audio' to needsTranscription with the blob attached", async () => {
     const blob = new Blob(["fake audio bytes"], { type: "audio/mpeg" });
     const result = await ingest({ kind: "audio", file: blob, filename: "lecture.mp3" });
@@ -124,5 +132,17 @@ describe("ingest() routing", () => {
 
   it("rejects 'docx' ingestion without a file", async () => {
     await expect(ingest({ kind: "docx" })).rejects.toThrow();
+  });
+
+  it("rejects a binary file uploaded as text instead of sending garbage", async () => {
+    const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x00, 0x1a])], { type: "image/png" });
+    await expect(ingest({ kind: "text", file: png, filename: "photo.png" })).rejects.toThrow(/isn't a text file/);
+  });
+
+  it("explains that an old .doc file must be saved as .docx", async () => {
+    const legacy = new Blob([new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 1, 2, 3, 4])]);
+    await expect(ingest({ kind: "docx", file: legacy, filename: "essay.doc" })).rejects.toThrow(
+      /older Word \.doc files can't be read/,
+    );
   });
 });

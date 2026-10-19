@@ -105,7 +105,8 @@ describe("publik helpers", () => {
   });
 
   it("linesToCapabilities(): no list = every line; a list narrows", () => {
-    expect(linesToCapabilities(null)).toEqual({ chat: true, transcription: true, tts: true, embeddings: true });
-    expect(linesToCapabilities(["chat", "audio"])).toEqual({ chat: true, transcription: true, tts: false, embeddings: false });
+    expect(linesToCapabilities(null)).toEqual({ chat: true, transcription: true, tts: true, embeddings: true, vision: true });
+    expect(linesToCapabilities(["chat", "audio"])).toEqual({ chat: true, transcription: true, tts: false, embeddings: false, vision: true });
+    expect(linesToCapabilities(["audio"]).vision).toBe(false);
   });
 });

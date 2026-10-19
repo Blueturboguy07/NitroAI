@@ -14,6 +14,22 @@ export function capTokens(text: string, maxTokens: number): string {
   return text.length <= maxChars ? text : text.slice(0, maxChars);
 }
 
+/* How many tokens of each lesson a multi-lesson request may carry, given each
+   lesson's full size and the shared budget. Returns one cap per lesson, in the
+   same order. Shortest first, each lesson takes what it needs up to an even
+   share of what is left, so short lessons go in whole and their unused share
+   passes on to the longer ones; when everything fits, nothing is cut. */
+export function lessonBudgets(sizes: number[], total: number): number[] {
+  const caps = sizes.map(() => 0);
+  const order = sizes.map((_, i) => i).sort((a, b) => sizes[a] - sizes[b]);
+  let left = Math.max(0, total);
+  order.forEach((i, k) => {
+    caps[i] = Math.min(sizes[i], Math.floor(left / (order.length - k)));
+    left -= caps[i];
+  });
+  return caps;
+}
+
 /* Split text into chunks each <= maxTokens, breaking on paragraph then sentence
    then hard-char boundaries so we never split mid-word when avoidable. Optional
    overlap (in tokens) preserves context across chunk seams for coherent notes. */

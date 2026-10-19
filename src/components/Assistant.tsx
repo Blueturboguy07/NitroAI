@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Paperclip, X } from "lucide-react";
+import { ArrowUp, Paperclip, Quote as QuoteIcon, X } from "lucide-react";
 import { useApp } from "../lib/app";
 import { describeError, type ShownError } from "../lib/publik";
 import { ErrorNotice } from "./PublikNotice";
 import { chatAnswer } from "../lib/generation";
+import { capTokens, estimateTokens } from "../lib/generation/chunk";
 import { ingest } from "../lib/ingest";
 import { renderMarkdown } from "../lib/markdown";
 import { uuid, now } from "../lib/ids";
@@ -12,22 +13,59 @@ import type { ChatTurn, Note } from "../lib/types";
 interface Attachment {
   name: string;
   text: string;
+  /* True when the text was cut to fit the attachment budget. */
+  trimmed?: boolean;
 }
+
+/* Attached text rides inline in one chat request, so it is capped: no file
+   may exceed ATTACH_TOKENS_PER_FILE, and all attachments of one message
+   share ATTACH_TOKENS_TOTAL (keeps a long PDF from blowing the context
+   window or a low tokens-per-minute limit). */
+const ATTACH_TOKENS_PER_FILE = 8000;
+const ATTACH_TOKENS_TOTAL = 16000;
+
+function capAttachment(a: Attachment, maxTokens: number): Attachment {
+  if (estimateTokens(a.text) <= maxTokens) return a;
+  return { ...a, text: capTokens(a.text, maxTokens), trimmed: true };
+}
+
+/* Text highlighted in the editor via "Ask AI". `nonce` changes on every ask,
+   so asking about the same passage twice still refocuses the input. */
+export interface Quote {
+  text: string;
+  nonce: number;
+}
+
+/* One-click questions offered while a quote is attached. */
+const QUOTE_ACTIONS = ["Explain this", "Summarize this", "Give me an example"];
 
 /* Route a picked file to the right ingest extractor. Chat context is
    text-only, so audio/images aren't accepted here. */
-async function fileToAttachment(file: File): Promise<Attachment> {
+async function extractText(file: File): Promise<string> {
   const ext = file.name.toLowerCase().split(".").pop() ?? "";
   if (ext === "pdf") {
-    return { name: file.name, text: (await ingest({ kind: "pdf", file, filename: file.name })).text };
+    return (await ingest({ kind: "pdf", file, filename: file.name })).text;
   }
   if (ext === "docx") {
-    return { name: file.name, text: (await ingest({ kind: "docx", file, filename: file.name })).text };
+    return (await ingest({ kind: "docx", file, filename: file.name })).text;
   }
   if (["txt", "md", "markdown", "text"].includes(ext) || file.type.startsWith("text/")) {
-    return { name: file.name, text: await file.text() };
+    return await file.text();
   }
   throw new Error(`Can't read "${file.name}". Attach a PDF, DOCX, TXT, or Markdown file.`);
+}
+
+async function fileToAttachment(file: File): Promise<Attachment> {
+  const text = (await extractText(file)).trim();
+  if (!text) {
+    const isPdf = file.name.toLowerCase().endsWith(".pdf");
+    throw new Error(
+      isPdf
+        ? `"${file.name}" has no selectable text — it looks like a scanned PDF (pages are images). Attach a text-based PDF, or create a note from it instead.`
+        : `"${file.name}" is empty — there's no text to attach.`,
+    );
+  }
+  return capAttachment({ name: file.name, text }, ATTACH_TOKENS_PER_FILE);
 }
 
 /* Shared chat surface. `hero` = the full-page chat view; `panel` = the editor's
@@ -35,9 +73,13 @@ async function fileToAttachment(file: File): Promise<Attachment> {
 export default function Assistant({
   note,
   variant,
+  quote = null,
+  onClearQuote,
 }: {
   note: Note;
   variant: "hero" | "panel";
+  quote?: Quote | null;
+  onClearQuote?: () => void;
 }) {
   const { repo, engine } = useApp();
   const [turns, setTurns] = useState<ChatTurn[]>([]);
@@ -54,7 +96,7 @@ export default function Assistant({
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
   }, [turns, streaming]);
 
-  async function send(question: string, attachments: Attachment[] = []) {
+  async function send(question: string, attachments: Attachment[] = [], quoted?: string) {
     if (!question.trim() || busy) return;
     setErr(null);
     if (!engine) {
@@ -66,9 +108,17 @@ export default function Assistant({
     const displayContent = attachments.length
       ? `${question.trim()}\n\n${attachments.map((a) => `📎 ${a.name}`).join("  ")}`
       : question.trim();
-    const modelQuestion = attachments.length
-      ? `The user attached ${attachments.length} document(s) for you to use as context:\n\n` +
-        attachments.map((a) => `--- ${a.name} ---\n${a.text}`).join("\n\n") +
+    // Share the total budget across this message's attachments.
+    const perFile = Math.min(
+      ATTACH_TOKENS_PER_FILE,
+      Math.floor(ATTACH_TOKENS_TOTAL / Math.max(1, attachments.length)),
+    );
+    const capped = attachments.map((a) => capAttachment(a, perFile));
+    const modelQuestion = capped.length
+      ? `The user attached ${capped.length} document(s) for you to use as context:\n\n` +
+        capped
+          .map((a) => `--- ${a.name}${a.trimmed ? " (truncated)" : ""} ---\n${a.text}`)
+          .join("\n\n") +
         `\n\n---\n\nTheir question: ${question.trim()}`
       : question.trim();
     const userTurn: ChatTurn = {
@@ -76,16 +126,18 @@ export default function Assistant({
       noteId: note.id,
       role: "user",
       content: displayContent,
+      ...(quoted ? { quote: quoted } : {}),
       at: now(),
     };
     const history = [...turns];
     setTurns([...history, userTurn]);
+    onClearQuote?.();
     await repo?.putChat(userTurn);
     setBusy(true);
     setStreaming("");
     try {
       let acc = "";
-      const full = await chatAnswer(engine, note, history, modelQuestion, (d) => {
+      const full = await chatAnswer(engine, note, history, modelQuestion, quoted, (d) => {
         acc += d;
         setStreaming(acc);
       });
@@ -119,7 +171,8 @@ export default function Assistant({
             </p>
           </div>
           <div className="w-full max-w-2xl">
-            <ChatInput onSend={send} busy={busy} />
+            <ErrorNotice err={err} compact />
+            <ChatInput onSend={send} busy={busy} quote={quote} onClearQuote={onClearQuote} />
           </div>
         </div>
       ) : variant === "panel" && !hasConversation ? (
@@ -132,7 +185,7 @@ export default function Assistant({
           </div>
           <div className="p-4">
             <ErrorNotice err={err} compact />
-            <ChatInput onSend={send} busy={busy} />
+            <ChatInput onSend={send} busy={busy} quote={quote} onClearQuote={onClearQuote} />
           </div>
         </>
       ) : (
@@ -162,7 +215,7 @@ export default function Assistant({
           </div>
           <div className={variant === "hero" ? "mx-auto w-full max-w-2xl px-8 pb-6" : "p-4"}>
             <ErrorNotice err={err} compact />
-            <ChatInput onSend={send} busy={busy} />
+            <ChatInput onSend={send} busy={busy} quote={quote} onClearQuote={onClearQuote} />
           </div>
         </>
       )}
@@ -173,7 +226,12 @@ export default function Assistant({
 function Bubble({ turn }: { turn: ChatTurn }) {
   if (turn.role === "user") {
     return (
-      <div className="flex justify-end">
+      <div className="flex flex-col items-end gap-1">
+        {turn.quote && (
+          <div className="line-clamp-3 max-w-[85%] whitespace-pre-line border-l-2 border-accent pl-2.5 text-xs text-ink-dim">
+            {turn.quote}
+          </div>
+        )}
         <div className="max-w-[85%] rounded-2xl bg-accent px-4 py-2.5 text-sm text-white">
           {turn.content}
         </div>
@@ -191,20 +249,30 @@ function Bubble({ turn }: { turn: ChatTurn }) {
 function ChatInput({
   onSend,
   busy,
+  quote,
+  onClearQuote,
 }: {
-  onSend: (q: string, attachments: Attachment[]) => void;
+  onSend: (q: string, attachments: Attachment[], quoted?: string) => void;
   busy: boolean;
+  quote: Quote | null;
+  onClearQuote?: () => void;
 }) {
   const [value, setValue] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [attaching, setAttaching] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  function submit() {
-    if ((!value.trim() && attachments.length === 0) || busy) return;
-    if (!value.trim()) return; // need a question alongside any attachments
-    onSend(value, attachments);
+  // A fresh "Ask AI" from the editor puts the caret in the box.
+  useEffect(() => {
+    if (quote) inputRef.current?.focus();
+  }, [quote?.nonce]);
+
+  function submit(question = value) {
+    if ((!question.trim() && attachments.length === 0) || busy) return;
+    if (!question.trim()) return; // need a question alongside any attachments
+    onSend(question, attachments, quote?.text);
     setValue("");
     setAttachments([]);
     setAttachError(null);
@@ -216,13 +284,15 @@ function ChatInput({
     setAttaching(true);
     try {
       const added: Attachment[] = [];
+      const errors: string[] = [];
       for (const file of Array.from(files)) {
         try {
           added.push(await fileToAttachment(file));
         } catch (e) {
-          setAttachError(e instanceof Error ? e.message : `Couldn't read ${file.name}.`);
+          errors.push(e instanceof Error ? e.message : `Couldn't read ${file.name}.`);
         }
       }
+      if (errors.length) setAttachError(errors.join(" "));
       if (added.length) setAttachments((a) => [...a, ...added]);
     } finally {
       setAttaching(false);
@@ -232,6 +302,29 @@ function ChatInput({
 
   return (
     <div className="rounded-2xl border border-edge bg-card p-3 shadow-soft">
+      {quote && (
+        <div className="mb-2 rounded-lg bg-accent-softer p-2">
+          <div className="flex items-start gap-1.5 text-xs text-ink-dim">
+            <QuoteIcon className="mt-0.5 size-3 shrink-0 text-accent" />
+            <span className="line-clamp-3 flex-1 whitespace-pre-line">{quote.text}</span>
+            <button onClick={onClearQuote} className="shrink-0 hover:text-ink" aria-label="Remove quoted text">
+              <X className="size-3" />
+            </button>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {QUOTE_ACTIONS.map((q) => (
+              <button
+                key={q}
+                onClick={() => submit(q)}
+                disabled={busy}
+                className="rounded-md border border-edge bg-card px-2 py-0.5 text-xs font-semibold text-ink-dim hover:text-ink disabled:opacity-50"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {(attachments.length > 0 || attachError) && (
         <div className="mb-2 flex flex-wrap gap-1.5">
           {attachments.map((a, i) => (
@@ -241,6 +334,11 @@ function ChatInput({
             >
               <Paperclip className="size-3" />
               <span className="max-w-[160px] truncate">{a.name}</span>
+              {a.trimmed && (
+                <span className="text-ink-faint" title="Only the first part of this file fits in one message.">
+                  (trimmed)
+                </span>
+              )}
               <button
                 onClick={() => setAttachments((list) => list.filter((_, j) => j !== i))}
                 className="hover:text-ink"
@@ -254,6 +352,7 @@ function ChatInput({
         </div>
       )}
       <textarea
+        ref={inputRef}
         rows={1}
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -263,7 +362,7 @@ function ChatInput({
             submit();
           }
         }}
-        placeholder="Type a question here or type '@' to reference documents..."
+        placeholder={quote ? "Ask about the highlighted text…" : "Ask a question, or attach a document with the paperclip…"}
         className="w-full resize-none bg-transparent px-1 py-1 text-sm outline-none placeholder:text-ink-faint"
       />
       <input
@@ -286,7 +385,7 @@ function ChatInput({
         </button>
         <div className="flex items-center gap-2">
           <button
-            onClick={submit}
+            onClick={() => submit()}
             disabled={busy}
             className="rounded-xl bg-accent-softer p-2 text-ink-dim hover:text-ink disabled:opacity-50"
             aria-label="Send"

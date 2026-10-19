@@ -100,17 +100,49 @@ export function samplesPerChunk(maxBytes: number): number {
   return Math.max(1, Math.floor((maxBytes - WAV_HEADER_BYTES) / 2));
 }
 
+const EXT_BY_TYPE: Record<string, string> = {
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/m4a": "m4a",
+  "audio/aac": "aac",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/wave": "wav",
+  "audio/ogg": "ogg",
+  "audio/opus": "opus",
+  "audio/flac": "flac",
+  "audio/x-flac": "flac",
+  "audio/webm": "webm",
+  "video/webm": "webm",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+};
+
+/* The name an upload goes out under. Whisper picks the decoder from the
+   extension, so a real .mp3 sent as "audio.webm" can be rejected: use the
+   file's own name, else an extension from its MIME type. "webm" is only the
+   last resort (what the in-app recorder produces). */
+export function audioFilename(audio: Blob): string {
+  const name = typeof File !== "undefined" && audio instanceof File ? audio.name : "";
+  if (/\.[a-z0-9]{2,5}$/i.test(name)) return name;
+  return `audio.${EXT_BY_TYPE[audio.type.split(";")[0].trim().toLowerCase()] ?? "webm"}`;
+}
+
 /* The entry point. Small files pass through untouched (whatever container
-   they came in); large ones come back as ≤ maxBytes WAV pieces. */
+   they came in) unless `always` asks for WAV regardless; large ones come back
+   as ≤ maxBytes WAV pieces. */
 export async function chunkAudioForUpload(
   audio: Blob,
-  { maxBytes = MAX_UPLOAD_BYTES, decode = browserDecode, targetRate = TARGET_SAMPLE_RATE }: {
+  { maxBytes = MAX_UPLOAD_BYTES, decode = browserDecode, targetRate = TARGET_SAMPLE_RATE, always = false }: {
     maxBytes?: number;
     decode?: AudioDecoder;
     targetRate?: number;
+    always?: boolean;
   } = {},
 ): Promise<AudioChunk[]> {
-  if (audio.size <= maxBytes) return [{ blob: audio, filename: "audio.webm", offsetSeconds: 0 }];
+  if (!always && audio.size <= maxBytes) return [{ blob: audio, filename: audioFilename(audio), offsetSeconds: 0 }];
   const mono = toMono16k(await decode(audio), targetRate);
   const per = samplesPerChunk(maxBytes);
   const chunks: AudioChunk[] = [];

@@ -134,6 +134,63 @@ describe("Repo over memoryStore", () => {
     expect(forB.map((c) => c.id)).toEqual(["b-1"]);
   });
 
+  it("replaceCards swaps a note's deck instead of appending (regenerate never doubles it)", async () => {
+    const repo = new Repo(memoryStore());
+    await repo.putCards([
+      makeCard({ id: "a-1", noteId: "note-a" }),
+      makeCard({ id: "a-2", noteId: "note-a" }),
+      makeCard({ id: "b-1", noteId: "note-b" }),
+    ]);
+
+    await repo.replaceCards("note-a", [
+      makeCard({ id: "a-new-1", noteId: "note-a" }),
+      makeCard({ id: "a-new-2", noteId: "note-a" }),
+    ]);
+    expect((await repo.cardsFor("note-a")).map((c) => c.id).sort()).toEqual([
+      "a-new-1",
+      "a-new-2",
+    ]);
+    // Regenerating again with the same size keeps the deck the same size.
+    await repo.replaceCards("note-a", [makeCard({ id: "a-new-3", noteId: "note-a" })]);
+    expect((await repo.cardsFor("note-a")).map((c) => c.id)).toEqual(["a-new-3"]);
+    // Other notes' cards are untouched.
+    expect((await repo.cardsFor("note-b")).map((c) => c.id)).toEqual(["b-1"]);
+
+    // An empty replacement clears the deck.
+    await repo.replaceCards("note-a", []);
+    expect(await repo.cardsFor("note-a")).toEqual([]);
+  });
+
+  it("replaceQuestions swaps a note's quiz instead of appending, keeping attempts", async () => {
+    const repo = new Repo(memoryStore());
+    await repo.putQuestions([
+      makeQuestion({ id: "q-a1", noteId: "note-a" }),
+      makeQuestion({ id: "q-a2", noteId: "note-a" }),
+      makeQuestion({ id: "q-b1", noteId: "note-b" }),
+    ]);
+    await repo.putAttempt(makeAttempt({ id: "att-a", noteId: "note-a", questionId: "q-a1" }));
+
+    await repo.replaceQuestions("note-a", [makeQuestion({ id: "q-a3", noteId: "note-a" })]);
+    await repo.replaceQuestions("note-a", [makeQuestion({ id: "q-a4", noteId: "note-a" })]);
+
+    expect((await repo.questionsFor("note-a")).map((q) => q.id)).toEqual(["q-a4"]);
+    expect((await repo.questionsFor("note-b")).map((q) => q.id)).toEqual(["q-b1"]);
+    // Per-topic mastery history survives a regenerate.
+    expect((await repo.attemptsFor("note-a")).map((a) => a.id)).toEqual(["att-a"]);
+  });
+
+  it("replacePodcast leaves exactly one podcast per note", async () => {
+    const repo = new Repo(memoryStore());
+    await repo.putPodcast(makePodcast({ id: "p-a1", noteId: "note-a" }));
+    await repo.putPodcast(makePodcast({ id: "p-b1", noteId: "note-b" }));
+
+    await repo.replacePodcast("note-a", makePodcast({ id: "p-a2", noteId: "note-a" }));
+    await repo.replacePodcast("note-a", makePodcast({ id: "p-a3", noteId: "note-a" }));
+
+    expect((await repo.podcastsFor("note-a")).map((p) => p.id)).toEqual(["p-a3"]);
+    expect((await repo.podcastsFor("note-b")).map((p) => p.id)).toEqual(["p-b1"]);
+  });
+
   it("deleteNote cascades to flashcards, quiz, attempts, podcasts, and chat for that note", async () => {
     const repo = new Repo(memoryStore());
     const targetId = "note-target";

@@ -146,7 +146,10 @@ async function ingestYoutubeDesktop(url: string): Promise<IngestResult> {
 async function ingestViaLocalServer(url: string): Promise<IngestResult | null> {
   let res: Response;
   try {
-    res = await fetch(`/api/youtube-extract?url=${encodeURIComponent(url)}`);
+    res = await fetch(`/api/youtube-extract?url=${encodeURIComponent(url)}`, {
+      method: "POST",
+      headers: { "X-NitroAI": "1" },
+    });
   } catch {
     return null;
   }

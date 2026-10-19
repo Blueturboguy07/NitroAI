@@ -14,6 +14,10 @@
  *   POST /api/publik/chat                   → alias of /api/publik/v1/chat/completions
  *   *    /api/publik/v1/<allowlisted path>  → streaming passthrough to <base_url>/<path>
  *
+ * Caller checks (loopback Host, same Origin, X-NitroAI header) run BEFORE this
+ * handler, in httpServer.mjs via requestGuard.mjs — mount it only behind that
+ * guard, or any website could mint, forget or revoke this machine's key.
+ *
  * Pure Node built-ins. */
 
 import { Readable } from "node:stream";
@@ -47,6 +51,8 @@ const ALLOWED = new Set([
   "POST embeddings",
   "GET models",
 ]);
+
+const POST_ONLY = new Set(["/api/publik/provision", "/api/publik/forget", "/api/publik/disconnect"]);
 
 function sendJson(res, status, body, extraHeaders = {}) {
   res.writeHead(status, {
@@ -250,6 +256,12 @@ export function createPublikHandler(opts = {}) {
   return async function handlePublik(req, res, url) {
     const p = url.pathname;
     if (!p.startsWith("/api/publik/")) return false;
+
+    // State-changing routes are POST-only (never triggerable by a GET link/img).
+    if (POST_ONLY.has(p) && req.method !== "POST") {
+      sendJson(res, 405, { error: "method not allowed" }, { allow: "POST" });
+      return true;
+    }
 
     if (p === "/api/publik/status" && req.method === "GET") {
       sendJson(res, 200, status());

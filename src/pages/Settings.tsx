@@ -14,6 +14,8 @@ import {
   clearApiKey,
   detectProvider,
   loadApiKey,
+  PROVIDER_LABELS,
+  resolveProvider,
   saveApiKey,
 } from "../lib/engine/keys";
 import { createEngine } from "../lib/engine";
@@ -22,8 +24,9 @@ import { fetchPublikStatus } from "../lib/publik";
 import { DISCLOSURE_VERSION } from "../lib/publikCopy";
 import LocalSetupModal from "../components/LocalSetupModal";
 import PublikSettings from "../components/PublikSettings";
+import ModelPicker from "../components/ModelPicker";
 import { exportMarkdown, downloadText } from "../lib/export";
-import type { EngineMode } from "../lib/types";
+import type { EngineMode, ModelChoice, Provider } from "../lib/types";
 
 const DATA_FOLDER =
   typeof navigator !== "undefined" && navigator.platform.startsWith("Win")
@@ -38,6 +41,16 @@ const DEFAULT_CHAT_MODEL = "qwen2.5:3b";
 /* A small curated set of known-good chat models to offer even when the user
    hasn't pulled anything yet. Picking one that isn't downloaded triggers the
    normal setup flow, scoped to just that model. */
+/* What each "own key" provider covers, shown under the key field. */
+const PROVIDER_NOTES: Record<Provider, string> = {
+  openai: "Covers everything: notes, flashcards, quizzes, chat, audio transcription and podcast voices.",
+  gemini:
+    "Covers everything: notes, flashcards, quizzes, chat, audio transcription and podcast voices. Get a free key at aistudio.google.com/apikey.",
+  anthropic:
+    "Covers notes, flashcards, quizzes and chat. Audio transcription and podcast voices need an OpenAI or Gemini key.",
+  publik: "Covers everything the app does, billed to your publik account.",
+};
+
 const RECOMMENDED_MODELS: { id: string; label: string; note: string }[] = [
   { id: "qwen2.5:3b", label: "Qwen 2.5 3B", note: "Default · ~2 GB · fastest, smallest context" },
   { id: "qwen2.5:7b", label: "Qwen 2.5 7B", note: "~4.7 GB · stronger reasoning" },
@@ -48,6 +61,11 @@ const RECOMMENDED_MODELS: { id: string; label: string; note: string }[] = [
 export default function Settings() {
   const { prefs, savePrefs, repo, engine } = useApp();
   const [key, setKey] = useState("");
+  /* The key as last saved (what the engine and the model picker use), as
+     opposed to `key`, which follows the input while the user types. */
+  const [savedKey, setSavedKey] = useState("");
+  /* "" = detect the provider from the key's prefix. */
+  const [providerChoice, setProviderChoice] = useState<Provider | "">(prefs.cloudProvider ?? "");
   /* Whether this build can offer publik API at all (a token baked in at build
      time, an existing credential, or PUBLIK_API_KEY). Forks and dev builds
      without one never see the pill. */
@@ -67,11 +85,16 @@ export default function Settings() {
   const [localModels, setLocalModels] = useState<string[]>([]);
   /* Set while a picker choice needs a download before it can become active. */
   const [pendingModel, setPendingModel] = useState<string | null>(null);
-  const provider = detectProvider(key.trim());
+  const detected = detectProvider(key.trim());
+  const provider = resolveProvider(key.trim(), providerChoice);
+  const savedProvider = resolveProvider(savedKey, prefs.cloudProvider);
   const activeModel = prefs.localModel || DEFAULT_CHAT_MODEL;
 
   useEffect(() => {
-    loadApiKey().then(setKey);
+    loadApiKey().then((k) => {
+      setKey(k);
+      setSavedKey(k.trim());
+    });
     fetchPublikStatus().then((s) => setPublikOffered(s.available));
   }, []);
 
@@ -136,18 +159,30 @@ export default function Settings() {
     setStatus("saving");
     setMsg("");
     try {
-      const p = detectProvider(key.trim());
-      if (!p) throw new Error("Key must start with sk- (OpenAI), sk-ant- (Anthropic) or pk_ (publik API).");
+      const p = resolveProvider(key.trim(), providerChoice);
+      if (!p) {
+        throw new Error(
+          "Couldn't tell which provider this key is for. Keys start with sk- (OpenAI), AQ. or AIza (Google Gemini), " +
+            "sk-ant- (Anthropic) or pk_ (publik API) — or choose the provider above.",
+        );
+      }
       await createEngine({ mode: "cloud", provider: p, apiKey: key.trim() }).validate();
       await saveApiKey(key.trim());
+      setSavedKey(key.trim());
       setPublikPending(false);
-      savePrefs({ ...prefs, mode: "cloud" });
+      savePrefs({ ...prefs, mode: "cloud", cloudProvider: providerChoice });
       setStatus("saved");
       setTimeout(() => setStatus("idle"), 2500);
     } catch (e) {
       setStatus("error");
       setMsg(e instanceof Error ? e.message : "Could not validate the key.");
     }
+  }
+
+  function chooseCloudModels(p: Provider, choice: ModelChoice) {
+    // The legacy single override would beat any per-tier pick, so it's
+    // cleared the first time the user picks here.
+    savePrefs({ ...prefs, cloudModel: "", cloudModels: { ...prefs.cloudModels, [p]: choice } });
   }
 
   return (
@@ -188,7 +223,7 @@ export default function Settings() {
           </div>
         </div>
 
-        <div className="space-y-6">
+        <div className="min-w-0 space-y-6">
           <div className="rounded-card border border-edge bg-card p-6 shadow-soft">
             <div className="flex items-start justify-between">
               <div>
@@ -251,15 +286,30 @@ export default function Settings() {
                     type="password"
                     value={key}
                     onChange={(e) => setKey(e.target.value)}
-                    placeholder="sk-… (OpenAI), sk-ant-… (Anthropic) or pk_… (publik API) — auto-detected"
+                    placeholder="sk-… (OpenAI), AQ.… or AIza… (Google Gemini), sk-ant-… (Anthropic) or pk_… (publik API)"
                     className="w-full bg-transparent text-sm outline-none placeholder:text-ink-faint"
                   />
                   {provider && (
                     <span className="shrink-0 rounded-full bg-accent-softer px-2.5 py-1 text-xs font-bold text-accent">
-                      {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : "OpenAI"}
+                      {PROVIDER_LABELS[provider]}
                     </span>
                   )}
                 </div>
+                <label className="mt-2 flex min-w-0 items-center gap-2">
+                  <span className="shrink-0 text-xs font-semibold text-ink-faint">Provider</span>
+                  <select
+                    value={providerChoice}
+                    onChange={(e) => setProviderChoice(e.target.value as Provider | "")}
+                    className="min-w-0 max-w-full rounded-lg border border-edge bg-panel px-2 py-1 text-xs font-semibold outline-none focus:border-accent"
+                  >
+                    <option value="">Auto-detect{detected ? ` (${PROVIDER_LABELS[detected]})` : ""}</option>
+                    {(["openai", "gemini", "anthropic", "publik"] as const).map((p) => (
+                      <option key={p} value={p}>
+                        {PROVIDER_LABELS[p]}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <div className="mt-3 flex items-center gap-3">
                   <button
                     onClick={saveKey}
@@ -278,6 +328,13 @@ export default function Settings() {
                       onClick={async () => {
                         await clearApiKey();
                         setKey("");
+                        setSavedKey("");
+                        setProviderChoice("");
+                        setStatus("idle");
+                        setMsg("");
+                        // Drop the provider pinned to the removed key and
+                        // rebuild the engine, so nothing keeps using it.
+                        savePrefs({ ...prefs, cloudProvider: "" });
                       }}
                       className="text-sm font-semibold text-ink-faint hover:text-danger-ink"
                     >
@@ -289,8 +346,17 @@ export default function Settings() {
                   <p className="mt-2 text-xs font-semibold text-danger-ink">{msg}</p>
                 )}
                 <p className="mt-2 text-xs text-ink-faint">
-                  Stored only on this computer. One key powers every feature.
+                  Stored only on this computer.{" "}
+                  {provider ? PROVIDER_NOTES[provider] : "One key powers every feature."}
                 </p>
+                {savedProvider && (
+                  <ModelPicker
+                    provider={savedProvider}
+                    apiKey={savedKey}
+                    choice={prefs.cloudModels?.[savedProvider] ?? {}}
+                    onChange={(choice) => chooseCloudModels(savedProvider, choice)}
+                  />
+                )}
               </div>
             ) : (
               <div className="mt-5 rounded-xl border border-edge bg-panel p-4">

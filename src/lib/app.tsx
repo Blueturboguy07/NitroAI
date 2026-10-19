@@ -1,106 +1,28 @@
 /* App-wide context: opens the local database once, builds the active engine from
    prefs + stored key, and exposes both to every page. A `version` counter lets
-   pages cheaply refresh their data after writes. */
+   pages cheaply refresh their data after writes.
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import { Repo } from "./db";
-import { idbStore } from "./db/idb";
-import { memoryStore } from "./db/memory";
-import { createEngine, PUBLIK_DEFAULT_MODELS } from "./engine";
+   The context object and hook live in ./appContext, the database/engine
+   plumbing in ./appServices; both are re-exported here so existing
+   `import { useApp } from "../lib/app"` call sites keep working. */
+
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AlertTriangle, X } from "lucide-react";
+import type { Repo } from "./db";
 import type { Engine } from "./engine/types";
-import { resilient } from "./engine/resilient";
-import { detectProvider, loadApiKey } from "./engine/keys";
 import { getEnginePrefs, saveEnginePrefs } from "./prefs";
-import { fetchPublikStatus, linesToCapabilities, statusToBalance, usageToBalance } from "./publik";
 import type { EnginePrefs } from "./types";
 import { reconcileJobs } from "./generation/pipeline";
+import { AppContext, useApp, type AppCtx, type StorageKind } from "./appContext";
+import { buildEngine, getRepo, repoStorageKind } from "./appServices";
 
-let repoPromise: Promise<Repo> | null = null;
-export function getRepo(): Promise<Repo> {
-  if (!repoPromise) {
-    repoPromise = (async () => {
-      try {
-        return new Repo(await idbStore());
-      } catch {
-        return new Repo(memoryStore());
-      }
-    })();
-  }
-  return repoPromise;
+export { getRepo, buildEngine, repoStorageKind } from "./appServices";
+export { useApp, AppContext, type AppCtx, type StorageKind } from "./appContext";
+
+function engineErrorMessage(e: unknown): string {
+  const detail = e instanceof Error && e.message ? ` (${e.message})` : "";
+  return `Couldn't start the AI engine${detail}. Check your engine in Settings and try again.`;
 }
-
-/* Build the engine described by prefs. Returns null if not configured (no mode
-   picked, cloud mode without a valid key, or publik mode with no credential —
-   the app then degrades to "Set up your engine in Settings", never a dialog). */
-export async function buildEngine(
-  prefs: EnginePrefs = getEnginePrefs(),
-): Promise<Engine | null> {
-  if (!prefs.mode) return null;
-  if (prefs.mode === "local") {
-    return resilient(createEngine({ mode: "local", model: prefs.localModel || undefined }));
-  }
-
-  if (prefs.mode === "publik") {
-    // The credential lives in the local server; the renderer only learns
-    // whether it is ready and which aliases to use. The user's own key slot
-    // is never read on this path.
-    const s = await fetchPublikStatus();
-    if (!s.available || s.state !== "ready") return null;
-    // The starter grant and claim link seed the balance store so the
-    // low-starter banner has its denominator and its one link.
-    statusToBalance(s);
-    return resilient(
-      createEngine({
-        mode: "cloud",
-        provider: "publik",
-        baseUrl: s.baseUrl,
-        models: {
-          fast: s.models?.fast ?? PUBLIK_DEFAULT_MODELS.fast,
-          strong: s.models?.balanced ?? PUBLIK_DEFAULT_MODELS.strong,
-        },
-        capabilities: linesToCapabilities(s.lines),
-        onUsage: usageToBalance,
-      }),
-    );
-  }
-
-  // "cloud" = the user's own key. Unchanged, except a pasted pk_ key now
-  // routes to publik API (through the local proxy). The publik credential is
-  // never consulted here — the user's choice wins even if a file exists.
-  const key = await loadApiKey();
-  const provider = detectProvider(key);
-  if (!provider) return null;
-  return resilient(
-    createEngine({
-      mode: "cloud",
-      provider,
-      apiKey: key,
-      model: prefs.cloudModel || undefined,
-      ...(provider === "publik" ? { onUsage: usageToBalance } : {}),
-    }),
-  );
-}
-
-interface AppCtx {
-  repo: Repo | null;
-  engine: Engine | null;
-  prefs: EnginePrefs;
-  ready: boolean;
-  version: number;
-  bump: () => void;
-  reloadEngine: () => void;
-  savePrefs: (p: EnginePrefs) => void;
-}
-
-const Ctx = createContext<AppCtx | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [repo, setRepo] = useState<Repo | null>(null);
@@ -108,50 +30,134 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [prefs, setPrefs] = useState<EnginePrefs>(() => getEnginePrefs());
   const [version, setVersion] = useState(0);
   const [ready, setReady] = useState(false);
+  const [storage, setStorage] = useState<StorageKind>("indexeddb");
+  const [engineError, setEngineError] = useState<string | null>(null);
+
+  /* Every engine build takes a ticket; only the latest ticket may land, so a
+     fast toggle (local → cloud → local) can't be overwritten by an older,
+     slower build resolving last. */
+  const engineSeq = useRef(0);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const applyEngine = useCallback(async (p?: EnginePrefs) => {
+    const seq = ++engineSeq.current;
+    setEngineError(null);
+    try {
+      const e = await buildEngine(p);
+      if (!alive.current || seq !== engineSeq.current) return;
+      setEngine(e);
+    } catch (err) {
+      if (!alive.current || seq !== engineSeq.current) return;
+      setEngine(null);
+      setEngineError(engineErrorMessage(err));
+    }
+  }, []);
 
   const bump = useCallback(() => setVersion((v) => v + 1), []);
+  const clearEngineError = useCallback(() => setEngineError(null), []);
 
   const reloadEngine = useCallback(() => {
     const p = getEnginePrefs();
     setPrefs(p);
-    buildEngine(p).then(setEngine);
-  }, []);
+    void applyEngine(p);
+  }, [applyEngine]);
 
   const savePrefs = useCallback(
     (p: EnginePrefs) => {
       saveEnginePrefs(p);
       setPrefs(p);
-      buildEngine(p).then(setEngine);
+      void applyEngine(p);
     },
-    [],
+    [applyEngine],
   );
 
   useEffect(() => {
-    let alive = true;
+    let live = true;
     (async () => {
       const r = await getRepo();
       await reconcileJobs(r).catch(() => {});
-      const e = await buildEngine().catch(() => null);
-      if (!alive) return;
+      if (!live) return;
       setRepo(r);
-      setEngine(e);
+      setStorage(repoStorageKind());
+      await applyEngine();
+      if (!live) return;
       setReady(true);
     })();
     return () => {
-      alive = false;
+      live = false;
     };
-  }, []);
+  }, [applyEngine]);
 
   const value = useMemo<AppCtx>(
-    () => ({ repo, engine, prefs, ready, version, bump, reloadEngine, savePrefs }),
-    [repo, engine, prefs, ready, version, bump, reloadEngine, savePrefs],
+    () => ({
+      repo,
+      engine,
+      prefs,
+      ready,
+      version,
+      bump,
+      reloadEngine,
+      savePrefs,
+      storage,
+      engineError,
+      clearEngineError,
+    }),
+    [repo, engine, prefs, ready, version, bump, reloadEngine, savePrefs, storage, engineError, clearEngineError],
   );
 
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  return (
+    <AppContext.Provider value={value}>
+      {children}
+      <AppNotices />
+    </AppContext.Provider>
+  );
 }
 
-export function useApp(): AppCtx {
-  const v = useContext(Ctx);
-  if (!v) throw new Error("useApp must be used inside <AppProvider>");
-  return v;
+/* App-level notices, pinned to the bottom of the window so they show on
+   every route (including the editor, which sits outside AppShell) without
+   shifting any page's layout. */
+function AppNotices() {
+  const { storage, engineError, clearEngineError } = useApp();
+  if (storage !== "memory" && !engineError) return null;
+  return (
+    <div className="pointer-events-none fixed inset-x-0 bottom-0 z-50 flex flex-col items-center gap-2 p-3">
+      {storage === "memory" && (
+        <div
+          role="status"
+          className="pointer-events-auto flex max-w-3xl items-start gap-2.5 rounded-xl border border-danger-ink/30 bg-danger-soft px-4 py-3 text-sm text-danger-ink shadow-soft"
+        >
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <span>
+            <span className="font-bold">Storage unavailable — changes won't be saved.</span>{" "}
+            NitroAI couldn't open its local database (private browsing or blocked site data can
+            cause this), so everything you create here lives in memory only and is lost when this
+            window reloads or closes. Export anything you want to keep.
+          </span>
+        </div>
+      )}
+      {engineError && (
+        <div
+          role="alert"
+          className="pointer-events-auto flex max-w-3xl items-start gap-2.5 rounded-xl border border-danger-ink/30 bg-danger-soft px-4 py-3 text-sm font-semibold text-danger-ink shadow-soft"
+        >
+          <AlertTriangle className="mt-0.5 size-4 shrink-0" />
+          <span className="min-w-0 flex-1">{engineError}</span>
+          <button
+            type="button"
+            onClick={clearEngineError}
+            aria-label="Dismiss engine error"
+            className="shrink-0 rounded-lg p-0.5 text-danger-ink/70 hover:bg-danger-ink/10 hover:text-danger-ink"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
 }

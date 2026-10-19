@@ -187,3 +187,287 @@ textarea,
 .katex {
   font-size: 1.02em;
 }
+
+/* ---- Note editor (Tiptap) ------------------------------------------------ */
+
+/* Highlighter shades. Stored in notes as a colour key, so each theme picks a
+   shade that keeps the text readable. */
+:root,
+:root[data-theme="light"] {
+  --hl-yellow: #fff0a0;
+  --hl-green: #cbf1c4;
+  --hl-blue: #cde4ff;
+  --hl-pink: #ffd3e7;
+  --hl-orange: #ffd9b0;
+  --hl-purple: #e4d6ff;
+}
+:root[data-theme="dark"] {
+  --hl-yellow: #66561a;
+  --hl-green: #245236;
+  --hl-blue: #1f4069;
+  --hl-pink: #632a4b;
+  --hl-orange: #6a3d1c;
+  --hl-purple: #47337a;
+}
+
+.nitro-doc {
+  outline: none;
+  min-height: 55vh;
+  font-size: 16px;
+  line-height: 1.75;
+  color: var(--nitro-ink);
+  caret-color: var(--color-accent);
+  overflow-wrap: break-word;
+}
+.nitro-doc > * + * {
+  margin-top: 0.65em;
+}
+.nitro-doc h1,
+.nitro-doc h2,
+.nitro-doc h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+.nitro-doc h1 {
+  font-size: 1.95rem;
+  margin-top: 1.3em;
+}
+.nitro-doc h2 {
+  font-size: 1.45rem;
+  margin-top: 1.25em;
+}
+.nitro-doc h3 {
+  font-size: 1.15rem;
+  margin-top: 1.1em;
+}
+.nitro-doc > :first-child {
+  margin-top: 0;
+}
+.nitro-doc ul {
+  list-style: disc;
+  padding-left: 1.5rem;
+}
+.nitro-doc ul ul {
+  list-style: circle;
+}
+.nitro-doc ol {
+  list-style: decimal;
+  padding-left: 1.6rem;
+}
+.nitro-doc li + li {
+  margin-top: 0.2em;
+}
+.nitro-doc li > p {
+  margin: 0;
+}
+.nitro-doc li::marker {
+  color: var(--nitro-ink-faint);
+}
+.nitro-doc ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0.15rem;
+}
+.nitro-doc li[data-type="taskItem"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+}
+.nitro-doc li[data-type="taskItem"] > label {
+  margin-top: 0.3em;
+  user-select: none;
+}
+.nitro-doc li[data-type="taskItem"] > label input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+.nitro-doc li[data-type="taskItem"] > div {
+  flex: 1;
+  min-width: 0;
+}
+.nitro-doc li[data-type="taskItem"][data-checked="true"] > div {
+  color: var(--nitro-ink-faint);
+  text-decoration: line-through;
+}
+.nitro-doc blockquote {
+  border-left: 3px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
+  padding-left: 1rem;
+  color: var(--nitro-ink-dim);
+  font-style: italic;
+}
+.nitro-doc div[data-type="callout"] {
+  position: relative;
+  border-radius: 0.75rem;
+  background: var(--nitro-callout-bg);
+  color: var(--nitro-callout-ink);
+  padding: 0.85rem 1rem 0.85rem 2.9rem;
+}
+.nitro-doc div[data-type="callout"]::before {
+  content: attr(data-emoji);
+  position: absolute;
+  left: 1rem;
+  top: 0.85rem;
+  font-style: normal;
+}
+.nitro-doc pre {
+  background: var(--nitro-panel);
+  border: 1px solid var(--nitro-edge);
+  border-radius: 0.75rem;
+  padding: 0.9rem 1rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+.nitro-doc :not(pre) > code {
+  background: var(--nitro-panel);
+  border: 1px solid var(--nitro-edge);
+  padding: 0.05em 0.35em;
+  border-radius: 0.35rem;
+  font-size: 0.86em;
+}
+.nitro-doc a {
+  color: var(--color-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.nitro-doc hr {
+  border: none;
+  border-top: 1px solid var(--nitro-edge);
+  margin: 1.6em 0;
+}
+.nitro-doc hr.ProseMirror-selectednode {
+  border-top-color: var(--color-accent);
+}
+.nitro-doc .tableWrapper {
+  overflow-x: auto;
+  margin: 1em 0;
+}
+.nitro-doc table {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
+.nitro-doc th,
+.nitro-doc td {
+  position: relative;
+  border: 1px solid var(--nitro-edge);
+  padding: 0.4rem 0.7rem;
+  vertical-align: top;
+  text-align: left;
+}
+.nitro-doc th {
+  background: var(--nitro-panel);
+  font-weight: 700;
+}
+.nitro-doc th > p,
+.nitro-doc td > p {
+  margin: 0;
+}
+.nitro-doc .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  pointer-events: none;
+}
+.nitro-doc mark {
+  color: inherit;
+  background: var(--hl-yellow);
+  border-radius: 0.2em;
+  padding: 0.04em 0.08em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+.nitro-doc mark[data-color="green"] { background: var(--hl-green); }
+.nitro-doc mark[data-color="blue"] { background: var(--hl-blue); }
+.nitro-doc mark[data-color="pink"] { background: var(--hl-pink); }
+.nitro-doc mark[data-color="orange"] { background: var(--hl-orange); }
+.nitro-doc mark[data-color="purple"] { background: var(--hl-purple); }
+
+/* Placeholder on the empty line the caret is in. */
+.nitro-doc .is-empty::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  color: var(--nitro-ink-faint);
+}
+
+/* Equations stay rendered; a click selects and opens the equation popover. */
+.nitro-math {
+  cursor: pointer;
+  border-radius: 0.35em;
+  transition: background-color 120ms;
+}
+.nitro-math-inline {
+  padding: 0 0.12em;
+}
+.nitro-math-block {
+  display: block;
+  margin: 0.9em 0;
+  padding: 0.4rem 0.5rem;
+  text-align: center;
+  overflow-x: auto;
+}
+.nitro-math-block .katex-display {
+  margin: 0;
+}
+.nitro-math:hover {
+  background: var(--nitro-accent-softer);
+}
+.nitro-math.is-selected {
+  background: var(--nitro-accent-softer);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+.nitro-math.is-blank {
+  color: var(--nitro-ink-faint);
+  font-size: 0.9em;
+  font-style: italic;
+}
+
+/* Highlighter mode: a pen cursor, and the selection previews the ink. */
+.nitro-highlighting .nitro-doc {
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24'%3E%3Cpath d='M3 21l3.5-1 11-11-2.5-2.5-11 11z' fill='%23fde047' stroke='%2327272a' stroke-width='1.4' stroke-linejoin='round'/%3E%3Cpath d='M15 6.5l2.5 2.5 2.3-2.3a1.4 1.4 0 000-2l-.5-.5a1.4 1.4 0 00-2 0z' fill='%23ffffff' stroke='%2327272a' stroke-width='1.4'/%3E%3C/svg%3E")
+      3 21,
+    text;
+}
+.nitro-highlighting .nitro-doc ::selection {
+  background: var(--hl-active);
+}
+
+/* ---- Library ---------------------------------------------------------------- */
+
+/* Drag image for notes and folders: a compact pill instead of a row ghost. */
+.nitro-drag-ghost {
+  position: fixed;
+  top: -200px;
+  left: -200px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: var(--color-accent);
+  color: #fff;
+  font: 700 13px var(--font-display);
+}
+
+.nitro-toast {
+  animation: nitro-toast-in 160ms ease-out;
+}
+@keyframes nitro-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .nitro-toast {
+    animation: none;
+  }
+}

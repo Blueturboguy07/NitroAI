@@ -1,10 +1,15 @@
 /* The local server the desktop shell runs. Serves the built SPA (dist/) and the
  * native-helper endpoints the browser can't do itself:
  *   GET  /api/health               → liveness (the shell polls this)
- *   GET  /api/youtube-extract?url= → yt-dlp captions/audio
+ *   POST /api/youtube-extract?url= → yt-dlp captions/audio (YouTube URLs only)
+ *   GET  /api/fetch-page?url=      → fetch a web page for "Import from URL" (SSRF-guarded, see fetchPage.mjs)
  *   GET  /api/local/status         → Ollama provisioning state
- *   GET  /api/local/setup          → SSE stream that installs/starts/pulls Ollama
+ *   POST /api/local/setup          → SSE stream that installs/starts/pulls Ollama
  *   *    /api/publik/*              → publik API credential + streaming proxy (see publikProxy.mjs)
+ *
+ * Every /api/* request must come from the app itself — loopback Host, our own
+ * Origin, and the X-NitroAI: 1 header (see requestGuard.mjs) — so other
+ * websites the user visits can't drive these endpoints.
  *
  * Pure Node built-ins, no framework, so the packaged app stays small and has
  * no extra supply chain. Exported as startServer() so both the Electron main
@@ -15,6 +20,8 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fetchPageResponse } from "./fetchPage.mjs";
+import { checkApiRequest } from "./requestGuard.mjs";
 import { extractYoutube } from "./ytdlp.mjs";
 import { provision, status } from "./ollama.mjs";
 import { createPublikHandler } from "./publikProxy.mjs";
@@ -37,26 +44,53 @@ const MIME = {
   ".ttf": "font/ttf",
   ".wasm": "application/wasm",
   ".map": "application/json; charset=utf-8",
+  // pdf.js runtime data copied to dist/pdfjs/ by vite.pdfjs-plugin.ts
+  ".bcmap": "application/octet-stream",
+  ".pfb": "application/x-font-type1",
+  ".icc": "application/vnd.iccprofile",
 };
 
-function sendJson(res, status, body) {
-  res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+function sendJson(res, status, body, extraHeaders = {}) {
+  if (res.headersSent) {
+    res.destroy();
+    return;
+  }
+  res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", ...extraHeaders });
   res.end(JSON.stringify(body));
+}
+
+function methodNotAllowed(res, allow) {
+  return sendJson(res, 405, { error: "method not allowed" }, { allow });
 }
 
 /* Serve a static file from dist/, defending against path traversal, with SPA
    fallback to index.html for client routes. */
 function serveStatic(distDir, urlPath, res) {
-  const clean = decodeURIComponent(urlPath.split("?")[0]);
-  const resolved = path.normalize(path.join(distDir, clean));
-  if (!resolved.startsWith(distDir)) {
+  let clean;
+  try {
+    clean = decodeURIComponent(urlPath.split("?")[0]);
+  } catch {
+    // Malformed %-escape (e.g. "/%E0%A4%A") — a bad request, not a crash.
+    res.writeHead(400).end("Bad Request");
+    return;
+  }
+  if (clean.includes("\0")) {
+    res.writeHead(400).end("Bad Request");
+    return;
+  }
+  const root = path.resolve(distDir);
+  const resolved = path.resolve(path.join(root, clean));
+  const rel = path.relative(root, resolved);
+  // Inside root means: not "..", not starting with "../", not absolute (another
+  // drive on Windows). A bare prefix check would let /dist-evil/ through.
+  if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
     res.writeHead(403).end("Forbidden");
     return;
   }
   let filePath = resolved;
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     // SPA routes (e.g. /notes/:id/editor) have no file — serve the app shell.
-    filePath = path.join(distDir, "index.html");
+    filePath = path.join(root, "index.html");
   }
   if (!fs.existsSync(filePath)) {
     res.writeHead(404).end("Not found");
@@ -67,11 +101,16 @@ function serveStatic(distDir, urlPath, res) {
     "content-type": MIME[ext] ?? "application/octet-stream",
     "cache-control": ext === ".html" ? "no-store" : "public, max-age=31536000, immutable",
   });
-  fs.createReadStream(filePath).pipe(res);
+  const stream = fs.createReadStream(filePath);
+  stream.on("error", () => res.destroy());
+  stream.pipe(res);
 }
 
 async function handleApi(req, res, url, opts) {
   const p = url.pathname;
+
+  const refused = checkApiRequest(req, p);
+  if (refused) return sendJson(res, refused.status, { error: refused.error });
 
   if (p === "/api/health") {
     return sendJson(res, 200, { ok: true, service: "nitroai" });
@@ -80,17 +119,27 @@ async function handleApi(req, res, url, opts) {
   if (await opts.publik(req, res, url)) return;
 
   if (p === "/api/youtube-extract") {
+    // POST: it downloads yt-dlp and spawns processes.
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
     const target = url.searchParams.get("url");
     if (!target) return sendJson(res, 400, { error: "missing url parameter" });
     try {
       const result = await extractYoutube(target, opts.binDir);
       return sendJson(res, 200, result);
     } catch (err) {
-      return sendJson(res, 502, { error: err instanceof Error ? err.message : "extraction failed" });
+      const status = err?.code === "invalid_youtube_url" ? 400 : 502;
+      return sendJson(res, status, { error: err instanceof Error ? err.message : "extraction failed" });
     }
   }
 
+  if (p === "/api/fetch-page") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
+    const r = await fetchPageResponse(url.searchParams.get("url"), opts.fetchPage);
+    return sendJson(res, r.status, r.body);
+  }
+
   if (p === "/api/local/status") {
+    if (req.method !== "GET") return methodNotAllowed(res, "GET");
     // Optional overrides so status reflects the model the CALLER actually
     // wants (e.g. one they picked or already pulled before), not just our
     // shipped default — see server/ollama.mjs status() for why that matters.
@@ -104,6 +153,8 @@ async function handleApi(req, res, url, opts) {
   }
 
   if (p === "/api/local/setup") {
+    // POST only: this installs Ollama and pulls multi-GB models.
+    if (req.method !== "POST") return methodNotAllowed(res, "POST");
     // Server-Sent Events: provisions Ollama and streams progress. Called ONLY
     // when the user has chosen the local engine. chatModel/embedModel let the
     // caller pull a specific model (from a picker, or a previously-chosen one)
@@ -146,22 +197,40 @@ export const STABLE_PORTS = [41763, 41764, 41765, 41766, 41767, 41768, 41769, 41
    sibling dist/ (works in dev and when packaged with app.asar layout).
    `ports` — try each candidate in order (EADDRINUSE → next); `port` is the
    one-candidate shorthand. `publik` — { token, appVersion, credentialFile?,
-   baseUrl?, fetchImpl? } for the publik credential + proxy routes. */
-export function startServer({ distDir, binDir, port = 0, ports, host = "127.0.0.1", publik = {} } = {}) {
+   baseUrl?, fetchImpl? } for the publik credential + proxy routes.
+   `fetchPage` — test-only overrides for /api/fetch-page (see fetchPage.mjs). */
+export function startServer({ distDir, binDir, port = 0, ports, host = "127.0.0.1", publik = {}, fetchPage } = {}) {
   const resolvedDist = distDir ?? path.join(__dirname, "..", "dist");
   const candidates = Array.isArray(ports) && ports.length ? ports : [port];
   const handlePublik = createPublikHandler(publik);
 
-  const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? "/", `http://${host}`);
-    if (url.pathname.startsWith("/api/")) {
-      const appOrigin = `http://${host}:${server.address()?.port ?? candidates[0]}`;
-      handleApi(req, res, url, { binDir, appOrigin, publik: handlePublik }).catch((err) =>
-        sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" }),
-      );
-      return;
+  /* Nothing a single request does may take the process down — in Electron
+     this is the main process, so a throw here would kill the whole app. */
+  const fail = (res, err) => {
+    try {
+      sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" });
+    } catch {
+      res.destroy();
     }
-    serveStatic(resolvedDist, url.pathname, res);
+  };
+
+  const server = http.createServer((req, res) => {
+    try {
+      let url;
+      try {
+        url = new URL(req.url ?? "/", `http://${host}`);
+      } catch {
+        return sendJson(res, 400, { error: "bad request" });
+      }
+      if (url.pathname.startsWith("/api/")) {
+        const appOrigin = `http://${host}:${server.address()?.port ?? candidates[0]}`;
+        handleApi(req, res, url, { binDir, appOrigin, publik: handlePublik, fetchPage }).catch((err) => fail(res, err));
+        return;
+      }
+      serveStatic(resolvedDist, url.pathname, res);
+    } catch (err) {
+      fail(res, err);
+    }
   });
 
   return new Promise((resolve, reject) => {
