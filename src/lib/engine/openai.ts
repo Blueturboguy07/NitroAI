@@ -27,6 +27,8 @@ import { unsupportedMessage, type Task } from "./router";
 import { chunkAudioForUpload, type AudioChunk, type AudioDecoder } from "../audio/chunk";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+const OPENROUTER_DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
+const CHAT_ONLY_CAPS: EngineCapabilities = { chat: true, transcription: false, tts: false, embeddings: false };
 const ALL_CAPS: EngineCapabilities = { chat: true, transcription: true, tts: true, embeddings: true };
 
 /* What the gateway stamps on every metered call (contract §1). Streams settle
@@ -47,7 +49,7 @@ export interface UsageHeaders {
 
 export interface OpenAIEngineOptions {
   baseUrl?: string;
-  provider?: "openai" | "publik";
+  provider?: "openai" | "openrouter" | "publik";
   models?: { fast: string; strong: string };
   capabilities?: EngineCapabilities;
   onUsage?: (u: UsageHeaders) => void;
@@ -57,7 +59,7 @@ export interface OpenAIEngineOptions {
 
 export class OpenAIEngine implements Engine {
   readonly mode = "cloud" as const;
-  readonly provider: "openai" | "publik";
+  readonly provider: "openai" | "openrouter" | "publik";
   private readonly baseUrl: string;
   private readonly models: { fast: string; strong: string };
   private readonly caps: EngineCapabilities;
@@ -70,9 +72,11 @@ export class OpenAIEngine implements Engine {
     opts: OpenAIEngineOptions = {},
   ) {
     this.provider = opts.provider ?? "openai";
-    this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
-    this.models = opts.models ?? { fast: "gpt-4o-mini", strong: "gpt-4o" };
-    this.caps = opts.capabilities ?? { ...ALL_CAPS };
+    this.baseUrl = (opts.baseUrl ?? (this.provider === "openrouter" ? OPENROUTER_DEFAULT_BASE_URL : DEFAULT_BASE_URL)).replace(/\/$/, "");
+    this.models = opts.models ?? (this.provider === "openrouter"
+      ? { fast: "openrouter/free", strong: "openrouter/free" }
+      : { fast: "gpt-4o-mini", strong: "gpt-4o" });
+    this.caps = opts.capabilities ?? (this.provider === "openrouter" ? { ...CHAT_ONLY_CAPS } : { ...ALL_CAPS });
     this.onUsage = opts.onUsage;
     this.audioDecoder = opts.audioDecoder;
   }
@@ -261,7 +265,7 @@ export class OpenAIEngine implements Engine {
   }
 
   private label(): string {
-    return this.provider === "publik" ? "publik API" : "OpenAI";
+    return this.provider === "publik" ? "publik API" : this.provider === "openrouter" ? "OpenRouter" : "OpenAI";
   }
 
   private assertCap(task: Task): void {
@@ -371,8 +375,8 @@ interface ApiErrorBody {
   };
 }
 
-async function mapError(res: Response, provider: "openai" | "publik"): Promise<EngineError> {
-  let message = res.statusText || `${provider === "publik" ? "publik API" : "OpenAI"} request failed.`;
+async function mapError(res: Response, provider: "openai" | "openrouter" | "publik"): Promise<EngineError> {
+  let message = res.statusText || `${provider === "publik" ? "publik API" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} request failed.`;
   let code: string | undefined;
   let type: string | undefined;
   let body: ApiErrorBody | undefined;

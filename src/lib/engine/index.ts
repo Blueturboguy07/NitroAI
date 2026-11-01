@@ -57,8 +57,14 @@ export function createEngine(opts: CreateEngineOptions): Engine {
       return new AnthropicEngine(opts.apiKey, opts.model);
     case "openai":
       return new OpenAIEngine(opts.apiKey, opts.model);
+    case "openrouter":
+      return new OpenAIEngine(opts.apiKey, opts.model, {
+        provider: "openrouter",
+        baseUrl: "https://openrouter.ai/api/v1",
+        capabilities: { chat: true, transcription: false, tts: false, embeddings: false },
+      });
     default:
-      throw new EngineError("A provider (openai, anthropic or publik) is required for cloud mode.", "unknown");
+      throw new EngineError("A provider (openai, anthropic, openrouter or publik) is required for cloud mode.", "unknown");
   }
 }
 

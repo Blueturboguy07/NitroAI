@@ -286,6 +286,18 @@ describe("createEngine", () => {
     expect(createEngine({ mode: "local" })).toBeInstanceOf(LocalEngine);
   });
 
+  it("routes OpenRouter keys through the OpenAI-compatible chat API", async () => {
+    const fetchMock = mockFetch(async () => streamResponse(["data: [DONE]\\n\\n"]));
+    vi.stubGlobal("fetch", fetchMock);
+    const engine = createEngine({ mode: "cloud", provider: "openrouter", apiKey: "sk-or-v1-test" });
+    await engine.complete({ messages: [{ role: "user", content: "hi" }] });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer sk-or-v1-test");
+    expect(JSON.parse(init?.body as string).model).toBe("openrouter/free");
+    expect(engine.capabilities()).toEqual({ chat: true, transcription: false, tts: false, embeddings: false });
+  });
+
   it("throws when cloud mode is missing an API key or provider", () => {
     expect(() => createEngine({ mode: "cloud" })).toThrow(EngineError);
     expect(() => createEngine({ mode: "cloud", apiKey: "sk-x" })).toThrow(EngineError);

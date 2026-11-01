@@ -182,7 +182,7 @@ export async function generateQuiz(
   const count = opts.count ?? 8;
   const difficulty = opts.difficulty ?? "intermediate";
   const types = opts.types ?? ["mcq", "true_false", "fill_blank"];
-  const content = studyContent(note);
+  const content = capTokens(contentFor(note), STUDY_TOKENS);
   const { questions } = await engine.structured<{
     questions: Omit<QuizQuestion, "id" | "noteId">[];
   }>({
@@ -191,6 +191,8 @@ export async function generateQuiz(
     schema: quizSchema as unknown as Record<string, unknown>,
     schemaName: "quiz",
     tier: "strong",
+    temperature: 0.1,
+    maxTokens: Math.min(8000, 300 + count * 180),
   });
   return questions.map((q) => ({ ...q, id: uuid(), noteId: note.id }));
 }

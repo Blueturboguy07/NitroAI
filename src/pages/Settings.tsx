@@ -251,12 +251,12 @@ export default function Settings() {
                     type="password"
                     value={key}
                     onChange={(e) => setKey(e.target.value)}
-                    placeholder="sk-… (OpenAI), sk-ant-… (Anthropic) or pk_… (publik API) — auto-detected"
+                    placeholder="sk-… (OpenAI), sk-ant-… (Anthropic), sk-or-… (OpenRouter) or pk_… (publik API) — auto-detected"
                     className="w-full bg-transparent text-sm outline-none placeholder:text-ink-faint"
                   />
                   {provider && (
                     <span className="shrink-0 rounded-full bg-accent-softer px-2.5 py-1 text-xs font-bold text-accent">
-                      {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : "OpenAI"}
+                      {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : provider === "openrouter" ? "OpenRouter" : "OpenAI"}
                     </span>
                   )}
                 </div>

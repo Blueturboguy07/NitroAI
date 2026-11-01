@@ -12,6 +12,7 @@ export function detectProvider(key: string): Provider | null {
   const k = key.trim();
   if (PUBLIK_KEY_FORMAT.test(k)) return "publik";
   if (k.startsWith("sk-ant-")) return "anthropic";
+  if (k.startsWith("sk-or-")) return "openrouter";
   if (k.startsWith("sk-")) return "openai";
   return null;
 }
