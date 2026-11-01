@@ -74,7 +74,7 @@ export class OpenAIEngine implements Engine {
     this.provider = opts.provider ?? "openai";
     this.baseUrl = (opts.baseUrl ?? (this.provider === "openrouter" ? OPENROUTER_DEFAULT_BASE_URL : DEFAULT_BASE_URL)).replace(/\/$/, "");
     this.models = opts.models ?? (this.provider === "openrouter"
-      ? { fast: "openai/gpt-4o-mini", strong: "openai/gpt-4o" }
+      ? { fast: "openrouter/free", strong: "openrouter/free" }
       : { fast: "gpt-4o-mini", strong: "gpt-4o" });
     this.caps = opts.capabilities ?? (this.provider === "openrouter" ? { ...CHAT_ONLY_CAPS } : { ...ALL_CAPS });
     this.onUsage = opts.onUsage;
