@@ -19,9 +19,11 @@ describe("detectProvider", () => {
 
   it("keeps the BYO prefixes and trims whitespace", () => {
     expect(detectProvider("sk-ant-abc")).toBe("anthropic");
+    expect(detectProvider("sk-or-v1-test")).toBe("openrouter");
     expect(detectProvider("sk-abc")).toBe("openai");
     expect(detectProvider(`  ${PK}\n`)).toBe("publik");
     expect(detectProvider("  sk-abc ")).toBe("openai");
+    expect(detectProvider("  sk-or-v1-test ")).toBe("openrouter");
     expect(detectProvider("")).toBeNull();
     expect(detectProvider("hello")).toBeNull();
   });
