@@ -15,7 +15,7 @@ export type SourceKind =
 /* "publik" = the metered publik API, provisioned by the app itself;
    "cloud" = the user's own key, unchanged. */
 export type EngineMode = "local" | "cloud" | "publik";
-export type Provider = "openai" | "anthropic" | "publik";
+export type Provider = "openai" | "anthropic" | "openrouter" | "publik";
 
 /* ---- Notes & content ---------------------------------------------------- */
 
