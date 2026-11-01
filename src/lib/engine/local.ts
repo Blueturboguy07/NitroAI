@@ -95,7 +95,7 @@ export class LocalEngine implements Engine {
       model: this.model,
       messages,
       stream: false,
-      format: "json",
+      format: opts.schema,
       options: buildOptions(opts),
     }, opts.signal);
 
