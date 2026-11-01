@@ -138,7 +138,7 @@ export function quizSystem(opts: {
     "Make distractors plausible but clearly wrong according to the source.",
     "Check every question, option, correctIndex, and explanation against the source.",
     "Return exactly the requested number of questions.",
-    "For mcq: exactly 4 plausible options, one correct. For true_false: options,
+    "For mcq: exactly 4 plausible options, one correct. For true_false: options",
     'are ["True","False"]. For fill_blank: options is a single-element array with',
     "the exact answer, and correctIndex is 0; write the question with a ___ blank.",
     "correctIndex is the 0-based index of the correct option. Every question needs",
