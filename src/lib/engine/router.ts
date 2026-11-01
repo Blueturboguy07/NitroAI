@@ -24,6 +24,18 @@ export function supportsTask(engine: Engine, task: Task): boolean {
 }
 
 export function unsupportedMessage(task: Task, provider?: Provider): string {
+  if (provider === "openrouter") {
+    switch (task) {
+      case "chat":
+        return "OpenRouter chat is unavailable for this key right now.";
+      case "transcription":
+        return "OpenRouter supports chat only here. Add an OpenAI key in Settings for audio transcription.";
+      case "tts":
+        return "OpenRouter supports chat only here. Add an OpenAI key in Settings for podcast voices.";
+      case "embeddings":
+        return "OpenRouter supports chat only here. Add an OpenAI key or use a local embedding model.";
+    }
+  }
   if (provider === "publik") {
     // publik API carries every line the app uses (chat at 50% of list; audio,
     // voices and embeddings at cost). A capability can still be switched off
