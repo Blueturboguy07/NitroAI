@@ -167,7 +167,7 @@ export default function Onboarding() {
           onClick={() => setMode("cloud")}
           icon={Cloud}
           title={publikOffered ? "Use my own key" : "Bring your own key"}
-          body="Use your OpenAI or Anthropic key for the highest-quality notes, quizzes, chat, and voices. You pay your provider directly — no NitroAI subscription, ever."
+          body="Use an OpenAI, Anthropic, or OpenRouter key for cloud chat and study content. You pay your provider directly — no NitroAI subscription, ever."
         />
       </div>
 
@@ -194,12 +194,12 @@ export default function Onboarding() {
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder="sk-... or sk-ant-..."
+              placeholder="sk-..., sk-ant-..., sk-or-..."
               className="w-full bg-transparent text-sm outline-none placeholder:text-ink-faint"
             />
             {provider && (
               <span className="shrink-0 rounded-full bg-accent-softer px-3 py-1 text-xs font-bold text-accent">
-                {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : "OpenAI"}
+                {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : provider === "openrouter" ? "OpenRouter" : "OpenAI"}
               </span>
             )}
           </div>
