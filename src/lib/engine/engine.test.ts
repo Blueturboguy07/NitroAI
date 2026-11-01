@@ -294,7 +294,7 @@ describe("createEngine", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://openrouter.ai/api/v1/chat/completions");
     expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer sk-or-v1-test");
-    expect(JSON.parse(init?.body as string).model).toBe("openai/gpt-4o-mini");
+    expect(JSON.parse(init?.body as string).model).toBe("openrouter/free");
     expect(engine.capabilities()).toEqual({ chat: true, transcription: false, tts: false, embeddings: false });
   });
 
