@@ -105,6 +105,10 @@ export interface EngineErrorDetail {
   /* publik API lowered the cap to fit the balance (x-publik-output-capped
      "<served>/<asked>"): the cap that was actually served. */
   cappedTo?: number;
+  /* kind "truncated": the model reported reasoning (thinking) for this
+     answer — reasoning tokens in `usage`, or reasoning text in the stream.
+     Only then do the messages say the length limit went on "thinking". */
+  reasoning?: boolean;
 }
 
 /* Raised by engines for user-actionable failures (bad key, quota, model
@@ -137,14 +141,22 @@ export class EngineError extends Error {
    2026-09-30 two NitroAI note sections spent all 4,000 of their tokens on
    reasoning and the app saved an empty note. Callers decide what to do with
    the partial text; this message is for the ones that just show it. */
-export function truncatedError(partialText: string, cappedTo?: number): EngineError {
+export function truncatedError(partialText: string, cappedTo?: number, reasoning = false): EngineError {
   const capped = cappedTo
     ? " publik API lowered the length limit of this request to fit your balance; adding a plan or pack gives it the full limit."
     : "";
+  /* "thinking" only when the model reported reasoning tokens. Local models
+     and models that do not reason just stopped at the length limit. */
   const message = partialText.trim()
     ? `The answer stopped at the AI's length limit before it was finished.${capped}`
-    : `The AI used its whole length limit on thinking and wrote no answer.${capped}`;
-  return new EngineError(message, "truncated", { partialText, ...(cappedTo ? { cappedTo } : {}) });
+    : reasoning
+      ? `The AI used its whole length limit on thinking and wrote no answer.${capped}`
+      : `The AI stopped at its length limit before it wrote an answer.${capped}`;
+  return new EngineError(message, "truncated", {
+    partialText,
+    ...(cappedTo ? { cappedTo } : {}),
+    ...(reasoning ? { reasoning } : {}),
+  });
 }
 
 /* x-publik-output-capped: "<served>/<asked>" — the cap publik actually served. */

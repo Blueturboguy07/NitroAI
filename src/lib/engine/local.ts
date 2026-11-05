@@ -54,6 +54,8 @@ export class LocalEngine implements Engine {
     let buffer = "";
     let full = "";
     let doneReason: string | null = null;
+    // A thinking model (qwen3, deepseek-r1 …) streams its thinking apart.
+    let reasoned = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -71,6 +73,7 @@ export class LocalEngine implements Engine {
             full += delta;
             onToken?.(delta);
           }
+          if (typeof json.message?.thinking === "string" && json.message.thinking) reasoned = true;
           if (json.done === true && typeof json.done_reason === "string") doneReason = json.done_reason;
         } catch {
           /* malformed line; skip it */
@@ -78,7 +81,7 @@ export class LocalEngine implements Engine {
       }
     }
     // num_predict reached (Ollama's finish_reason "length").
-    if (doneReason === "length") throw truncatedError(full);
+    if (doneReason === "length") throw truncatedError(full, undefined, reasoned);
     return full;
   }
 
@@ -105,10 +108,22 @@ export class LocalEngine implements Engine {
 
     const json = await res.json();
     const content: string | undefined = json.message?.content;
+    /* num_predict reached: the JSON is cut and cannot be parsed. Say so the
+       same way the cloud engines do (generation turns it into "The AI
+       reached its length limit before it finished the quiz …"), instead of
+       a raw "SyntaxError: Unterminated string in JSON". */
+    if (json.done_reason === "length") {
+      const thought = typeof json.message?.thinking === "string" && json.message.thinking !== "";
+      throw truncatedError(content ?? "", undefined, thought);
+    }
     if (!content) {
       throw new EngineError("Ollama returned no content for structured output.", "unknown");
     }
-    return JSON.parse(content) as T;
+    try {
+      return JSON.parse(content) as T;
+    } catch {
+      throw new EngineError("The local model returned an answer that is not complete JSON. Try again.", "unknown");
+    }
   }
 
   async transcribe(_audio: Blob, _signal?: AbortSignal): Promise<TranscriptResult> {

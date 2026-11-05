@@ -1,4 +1,5 @@
 import type { IngestResult } from "./index";
+import { MAX_TEXT_FILE_BYTES, textFileProblem, textTooLargeMessage } from "./fileTypes";
 
 const MAX_TITLE_LEN = 80;
 
@@ -44,15 +45,27 @@ export function decodeText(bytes: Uint8Array): string {
   }
 }
 
-/* A .txt or .md upload. Read the same way as a PDF or DOCX upload: the whole
-   file, no size limit of its own (note generation splits long sources into
-   sections), the title from the file name, and a read failure explained in
-   words. Before this, these uploads reached ingest() as kind "text" with a
-   File but no `text`, and every one failed with "No readable content found." */
-export async function ingestTextFile(file: File | Blob): Promise<IngestResult> {
+/* A .txt or .md upload: the whole file, the title from the file name, and a
+   read failure explained in words. A file over 2 MB, or one with binary data
+   (a NUL byte in its first 8 KB, e.g. a renamed .pptx), is refused before
+   anything is sent to a model. Before this reader, these uploads reached ingest()
+   as kind "text" with a File but no `text`, and every one failed with
+   "No readable content found." */
+export async function ingestTextFile(file: File | Blob, filename?: string): Promise<IngestResult> {
+  const name = fileName(file) ?? filename;
+  // Refuse before the whole file is read into memory.
+  if (file.size > MAX_TEXT_FILE_BYTES) throw new Error(textTooLargeMessage(name, file.size));
+  let bytes: Uint8Array;
   try {
-    const text = decodeText(new Uint8Array(await file.arrayBuffer())).trim();
-    const name = fileName(file);
+    bytes = new Uint8Array(await file.arrayBuffer());
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Couldn't read text from that document (${reason}).`);
+  }
+  const problem = textFileProblem(name, bytes.length, bytes);
+  if (problem) throw new Error(problem);
+  try {
+    const text = decodeText(bytes).trim();
     return {
       text,
       title: name ? titleFromFilename(name) : deriveTitle(text),

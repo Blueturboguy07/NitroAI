@@ -97,7 +97,13 @@ export async function completeToFit(
   if (first.text.trim()) return first;
   if (engine.mode !== "cloud" || opts.tier === "fast") return first;
   const second = await once({ ...opts, tier: "fast" });
-  return second.text.trim() ? second : { text: "", cut: second.cut ?? first.cut };
+  if (second.text.trim()) return second;
+  // Both empty. Keep "it thought" when either try reported reasoning.
+  let cut = second.cut ?? first.cut;
+  if (cut && !cut.detail.reasoning && (first.cut?.detail.reasoning || second.cut?.detail.reasoning)) {
+    cut = new EngineError(cut.message, cut.kind, { ...cut.detail, reasoning: true });
+  }
+  return { text: "", cut };
 }
 
 /* The JSON twin of completeToFit: a cut JSON answer cannot be used, so a
@@ -134,15 +140,37 @@ function studyCutError(what: string, e: EngineError): EngineError {
   );
 }
 
-/* An open ``` or $$ block would swallow the notice appended after a cut. */
+/* An open ``` or $$ block would swallow the notice appended after a cut,
+   and a cut in the middle of **bold** leaves a bare "**" on the screen. */
 export function closeOpenFences(md: string): string {
   const lines = md.split("\n");
   const fences = lines.filter((l) => /^\s*```/.test(l)).length;
   const math = lines.filter((l) => /^\s*\$\$\s*$/.test(l)).length;
   let out = md.replace(/\s+$/, "");
+  // Inside an open code or math block "**" is literal text: leave it.
+  if (fences % 2 === 0 && math % 2 === 0) out = closeOpenBold(out);
   if (fences % 2 === 1) out += "\n```";
   if (math % 2 === 1) out += "\n$$";
   return out;
+}
+
+/* Bold cannot cross a blank line, so only the last paragraph can hold the
+   "**" that the cut left open. Code spans and thematic breaks ("***") do not
+   count. An odd count gets a closing "**"; a "**" with nothing after it yet
+   is dropped instead. */
+function closeOpenBold(md: string): string {
+  const lines = md.split("\n");
+  let start = lines.length;
+  while (start > 0 && lines[start - 1].trim() !== "" && !/^\s*(```|\$\$)/.test(lines[start - 1])) start--;
+  const paragraph = lines
+    .slice(start)
+    .filter((l) => !/^\s{0,3}([*_-])(\s*\1){2,}\s*$/.test(l))
+    .join("\n")
+    .replace(/`[^`\n]*`/g, "");
+  const marks = paragraph.match(/\*\*/g)?.length ?? 0;
+  if (marks % 2 === 0) return md;
+  if (md.endsWith("**")) return md.slice(0, -2).replace(/\s+$/, "");
+  return `${md}**`;
 }
 
 /* Shown inside the note, where the text stops. */
@@ -150,14 +178,30 @@ export function cutNotice(e: EngineError | null): string {
   return `> [!warning] These notes stop early: the AI reached its length limit while writing this part. Create the note again, or split the source into smaller parts, to get the rest.${cappedSentence(e)}`;
 }
 
+/* Why a call gave no text. "Thinking" only when the model reported
+   reasoning tokens; a cut with no reasoning just stopped at the length
+   limit; no cut at all means the model sent back nothing. */
+const NO_TEXT_WORDS = {
+  notes: ["notes for it", "notes for it"],
+  text: ["text", "any text"],
+  answer: ["answer", "an answer"],
+} as const;
+
+function noTextReason(e: EngineError | null, what: keyof typeof NO_TEXT_WORDS): string {
+  const [no, any] = NO_TEXT_WORDS[what];
+  if (e?.detail.reasoning) return `the AI used its whole length limit on thinking and wrote no ${no}`;
+  if (e) return `the AI stopped at its length limit before it wrote ${any}`;
+  return `the AI wrote no ${no}`;
+}
+
 export function missingSectionNotice(part: number, total: number, e: EngineError | null): string {
-  return `> [!warning] Section ${part} of ${total} is missing: the AI used its whole length limit on thinking and wrote no notes for it. Create the note again to fill it in.${cappedSentence(e)}`;
+  return `> [!warning] Section ${part} of ${total} is missing: ${noTextReason(e, "notes")}. Create the note again to fill it in.${cappedSentence(e)}`;
 }
 
 /* Every section came back empty (or the one pass did): nothing is saved. */
 export function emptyNoteError(e: EngineError | null): EngineError {
   return new EngineError(
-    `No note was saved: the AI used its whole length limit on thinking and wrote no text. Try again in a minute. A shorter source also helps.${cappedSentence(e)}`,
+    `No note was saved: ${noTextReason(e, "text")}. Try again in a minute. A shorter source also helps.${cappedSentence(e)}`,
     "truncated",
     e?.detail ?? { partialText: "" },
   );
@@ -182,10 +226,20 @@ export function contentFor(note: Note): string {
   return note.sourceText?.trim() ? note.sourceText : plainText(note.blocks);
 }
 
+/* The model's title line without markdown or a "Title:" label: "# Partial
+   notes" → "Partial notes", "**Calvin Cycle**" → "Calvin Cycle". "" when
+   nothing is left (generateTitle then fails and the pipeline uses the file
+   name or the first heading). */
 function cleanTitle(raw: string): string {
-  const line = raw.replace(/["""]/g, "").split("\n")[0].trim();
+  const first = raw.split("\n").map((l) => l.trim()).find((l) => l) ?? "";
+  const line = first
+    .replace(/^#{1,6}\s*/, "")
+    .replace(/\*\*|__/g, "")
+    .replace(/^title\s*:\s*/i, "")
+    .replace(/["\u201c\u201d]/g, "")
+    .trim();
   const words = line.split(/\s+/).slice(0, 8).join(" ");
-  return words.replace(/[.,:;]+$/, "") || "Untitled Document";
+  return words.replace(/[.,:;]+$/, "").trim();
 }
 
 /* ---- Notes -------------------------------------------------------------- */
@@ -285,7 +339,11 @@ export async function generateTitle(
     reasoningEffort: REASONING_EFFORT,
   });
   if (!title.trim()) throw cut ?? new EngineError("The AI wrote no title.", "unknown");
-  return cleanTitle(title);
+  // A cut title is part of a title ("# Partial notes" was saved this way).
+  if (cut) throw cut;
+  const clean = cleanTitle(title);
+  if (!clean) throw new EngineError("The AI wrote no title.", "unknown");
+  return clean;
 }
 
 /* ---- Flashcards (two-phase: topics, then cards) ------------------------- */
@@ -395,8 +453,9 @@ export async function chatAnswer(
   );
   if (!text.trim()) {
     // Never save an empty answer as if it were one.
+    const why = noTextReason(cut, "answer");
     throw new EngineError(
-      `The AI used its whole length limit on thinking and wrote no answer. Ask again, or ask a shorter question.${cappedSentence(cut)}`,
+      `${why.charAt(0).toUpperCase()}${why.slice(1)}. Ask again, or ask a shorter question.${cappedSentence(cut)}`,
       "truncated",
       cut?.detail ?? { partialText: "" },
     );

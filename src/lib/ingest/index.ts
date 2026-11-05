@@ -7,6 +7,7 @@ import { ingestUrl } from "./url";
 import { ingestYoutube } from "./youtube";
 import { ingestPdf } from "./pdf";
 import { ingestDocx } from "./docx";
+import { documentKind, unsupportedFileMessage } from "./fileTypes";
 
 export interface IngestInput {
   kind: SourceKind;
@@ -52,9 +53,13 @@ export async function ingest(input: IngestInput): Promise<IngestResult> {
       return { text: "" };
 
     case "text": {
-      // A .txt / .md upload arrives as kind "text" with the File, not the text.
+      /* A .txt / .md upload arrives as kind "text" with the File, not the
+         text. Only .txt and .md are read as text: any other named file (a
+         .pptx, .xlsx, .zip …) is refused here, before any model call. */
       if (input.text === undefined && input.file) {
-        const result = await ingestTextFile(input.file);
+        const name = input.filename ?? (typeof File !== "undefined" && input.file instanceof File ? input.file.name : undefined);
+        if (name !== undefined && documentKind(name) !== "text") throw new Error(unsupportedFileMessage(name));
+        const result = await ingestTextFile(input.file, name);
         return withFilenameFallback(result, input.filename);
       }
       return ingestText(input.text ?? "");

@@ -89,6 +89,11 @@ export const otherWays = {
 
 export const settings = {
   engineIntro: "NitroAI runs on publik API: no key of your own needed. You pay per use from your publik balance.",
+  /* The AI Engine intro matches the engine in use (blind verify: it said
+     "NitroAI runs on publik API" while the user was on their own key). */
+  engineIntroOwnKey: "NitroAI now runs on your own API key. Your AI provider bills you for it. publik API needs no key of your own.",
+  engineIntroLocal: "NitroAI now runs locally on this computer, for free. publik API needs no key of your own.",
+  engineIntroNone: "Set up publik API to run NitroAI with no key of your own. You pay per use from your publik balance.",
   readyTitle: "publik API is set up on this computer",
   useLabel: "Use publik API",
   rate: "Every request is priced per use at 50% of the model's published list price. Most people spend under $2 a month.",

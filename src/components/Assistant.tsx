@@ -5,6 +5,7 @@ import { describeError, type ShownError } from "../lib/publik";
 import { ErrorNotice } from "./PublikNotice";
 import { chatAnswer } from "../lib/generation";
 import { ingest } from "../lib/ingest";
+import { ingestTextFile } from "../lib/ingest/text";
 import { renderMarkdown } from "../lib/markdown";
 import { uuid, now } from "../lib/ids";
 import type { ChatTurn, Note } from "../lib/types";
@@ -25,8 +26,10 @@ async function fileToAttachment(file: File): Promise<Attachment> {
     return { name: file.name, text: (await ingest({ kind: "docx", file, filename: file.name })).text };
   }
   if (["txt", "md", "markdown", "text"].includes(ext) || file.type.startsWith("text/")) {
-    // Same reader as a .txt / .md note upload (BOM, UTF-16 and Windows-1252 aware).
-    return { name: file.name, text: (await ingest({ kind: "text", file, filename: file.name })).text };
+    /* Same reader as a .txt / .md note upload (BOM, UTF-16 and Windows-1252
+       aware, 2 MB limit, binary data refused), called directly so chat keeps
+       its wider list of text files (.markdown, text/* such as .csv). */
+    return { name: file.name, text: (await ingestTextFile(file, file.name)).text };
   }
   throw new Error(`Can't read "${file.name}". Attach a PDF, DOCX, TXT, or Markdown file.`);
 }

@@ -72,3 +72,27 @@ describe("Dashboard — New Folder", () => {
     expect(await repo.listFolders()).toEqual([]);
   });
 });
+
+/* D1: the card said "Any PDF, DOC, PPT, etc", but NitroAI cannot read slides. */
+describe("Dashboard — Document upload card", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    localStorage.clear();
+  });
+  afterEach(cleanup);
+
+  it("names only the types that work", async () => {
+    const { AppProvider } = await import("../lib/app");
+    const { default: Dashboard } = await import("./Dashboard");
+    render(
+      <MemoryRouter>
+        <AppProvider>
+          <Dashboard />
+        </AppProvider>
+      </MemoryRouter>,
+    );
+    const card = (await screen.findByText("Document upload")).closest("button")!;
+    expect(card).toHaveTextContent("PDF, Word, .txt or .md");
+    expect(card).not.toHaveTextContent(/PPT|etc/);
+  });
+});

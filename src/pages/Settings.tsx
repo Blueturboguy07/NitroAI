@@ -298,7 +298,13 @@ export default function Settings() {
                 </h2>
                 <p className="mt-1 text-sm text-ink-faint">
                   {publikOffered
-                    ? publikCopy.engineIntro
+                    ? prefs.mode === "publik"
+                      ? publikCopy.engineIntro
+                      : prefs.mode === "cloud"
+                        ? publikCopy.engineIntroOwnKey
+                        : prefs.mode === "local"
+                          ? publikCopy.engineIntroLocal
+                          : publikCopy.engineIntroNone
                     : "Run everything locally for free, or bring your own API key for cloud-quality output."}
                 </p>
               </div>

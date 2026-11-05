@@ -68,7 +68,9 @@ describe("Settings — publik API", () => {
 
     expect(await screen.findByRole("heading", { name: "NitroAI uses publik API" })).toBeInTheDocument();
     const card = engineCard();
-    expect(card).toHaveTextContent("NitroAI runs on publik API: no key of your own needed.");
+    // On their own key the intro says so (it used to say "NitroAI runs on publik API").
+    expect(card).toHaveTextContent("NitroAI now runs on your own API key.");
+    expect(card).not.toHaveTextContent("NitroAI runs on publik API");
     expect(primaryButtons(card)).toEqual([screen.getByRole("button", { name: "Continue with publik API" })]);
     // No pill of three, no own-key link next to Continue, no key field until opened.
     expect(screen.queryByRole("button", { name: "publik API" })).not.toBeInTheDocument();
@@ -231,4 +233,116 @@ describe("Settings — publik API", () => {
     expect(screen.queryByRole("button", { name: "publik API" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Cloud" })).toBeInTheDocument();
   });
+});
+
+/* D3 (blind verify of ed78aae): after "Disconnect publik API" the panel kept
+   its old "ready" status: it showed "publik API is set up on this computer"
+   with "Use publik API", and that button turned on publik mode with no
+   credential ("Ready · Balance loading…", uploads said "Set up your engine in
+   Settings first"). This server keeps state: disconnect and forget remove the
+   credential, provision makes one. */
+function statefulServer(ready: Record<string, unknown>, wallet: Record<string, unknown>) {
+  const none = { available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" };
+  const server = { status: ready as Record<string, unknown>, calls: [] as string[] };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      server.calls.push(url);
+      if (url === "/api/publik/status") return json(server.status);
+      if (url === "/api/publik/wallet") return server.status.state === "ready" ? json(wallet) : json({ error: { type: "no_publik_credential" } }, 404);
+      if (url === "/api/publik/provision") {
+        server.status = { ...ready, claimUrl: "https://publikhq.com/claim/NEW1-LINK" };
+        return json({ ok: true, minted: true, ...server.status });
+      }
+      if (url === "/api/publik/forget" || url === "/api/publik/disconnect") {
+        server.status = none;
+        return json({ ok: true, ...none });
+      }
+      if (url.startsWith("/api/local/status")) return json({ installed: false, serving: false, hasChatModel: false, hasEmbedModel: false, models: [] });
+      return new Response("not found", { status: 404 });
+    }),
+  );
+  return server;
+}
+
+describe("Settings — after Disconnect publik API (D3)", () => {
+  const ready = { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: null, starterMicros: 0 };
+
+  it("Disconnect shows the not-set-up state; its button sets up again and opens the link page", async () => {
+    localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
+    const server = statefulServer(ready, { balance_micros: 1_850_000, claim_state: "claimed" });
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await renderSettings();
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Disconnect publik API" }));
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs")!).mode).toBeNull());
+    const setUp = await screen.findByRole("button", { name: "Continue with publik API" });
+    expect(engineCard()).not.toHaveTextContent("publik API is set up on this computer");
+    expect(screen.queryByRole("button", { name: "Use publik API" })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("publik-balance-line")).not.toBeInTheDocument();
+    expect(primaryButtons(engineCard())).toEqual([setUp]);
+
+    await user.click(setUp);
+    await screen.findByTestId("publik-welcome-card");
+    expect(server.calls.filter((c) => c === "/api/publik/provision")).toHaveLength(1);
+    expect(open).toHaveBeenCalledWith("https://publikhq.com/claim/NEW1-LINK", "_blank", "noopener");
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs")!).mode).toBe("publik"));
+  });
+
+  it("Forget (anonymous install) also shows the not-set-up state", async () => {
+    localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "publik", onboarded: true, language: "English", publikDisclosureAck: 2 }));
+    statefulServer(ready, { balance_micros: 0, claim_state: "anonymous", claim_url: "https://publikhq.com/claim/OLD1-LINK" });
+    await renderSettings();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Forget publik on this computer" }));
+    expect(await screen.findByRole("button", { name: "Continue with publik API" })).toBeInTheDocument();
+    expect(engineCard()).not.toHaveTextContent("publik API is set up on this computer");
+  });
+
+  it("'Use publik API' on an out-of-date card reads the status again: no credential → normal set-up and link, never publik mode with no credential", async () => {
+    localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "local", onboarded: true, language: "English", publikDisclosureAck: 2 }));
+    const server = statefulServer(ready, { balance_micros: 1_850_000, claim_state: "claimed" });
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await renderSettings();
+    const user = userEvent.setup();
+    const use = within(await screen.findByTestId("publik-use-card")).getByRole("button", { name: "Use publik API" });
+
+    // The credential goes away after the card was drawn (another window, a
+    // disconnect from the publik account page, …).
+    server.status = { available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" };
+    await user.click(use);
+
+    await screen.findByTestId("publik-welcome-card");
+    expect(server.calls.filter((c) => c === "/api/publik/provision")).toHaveLength(1);
+    expect(open).toHaveBeenCalledWith("https://publikhq.com/claim/NEW1-LINK", "_blank", "noopener");
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs")!).mode).toBe("publik"));
+  });
+});
+
+/* Cosmetic (blind verify): the AI Engine intro said "NitroAI runs on publik
+   API…" while the user was on their own key or Local. */
+describe("Settings — the AI Engine intro matches the engine in use", () => {
+  const intro = () => engineCard().querySelector("h2 + p")!.textContent;
+  const cases: Array<[string | null, string]> = [
+    ["publik", "NitroAI runs on publik API: no key of your own needed. You pay per use from your publik balance."],
+    ["cloud", "NitroAI now runs on your own API key. Your AI provider bills you for it. publik API needs no key of your own."],
+    ["local", "NitroAI now runs locally on this computer, for free. publik API needs no key of your own."],
+    [null, "Set up publik API to run NitroAI with no key of your own. You pay per use from your publik balance."],
+  ];
+  for (const [mode, text] of cases) {
+    it(`mode ${String(mode)}`, async () => {
+      if (mode === "cloud") localStorage.setItem("nitroai.apikey", "sk-user-key");
+      localStorage.setItem("nitroai.prefs", JSON.stringify({ mode, onboarded: true, language: "English", publikDisclosureAck: 2 }));
+      stubServer(
+        { available: true, state: mode === "publik" ? "ready" : "unprovisioned", baseUrl: "/api/publik/v1", starterMicros: 0 },
+        { balance_micros: 1_000_000, claim_state: "claimed" },
+      );
+      await renderSettings();
+      await screen.findByRole("heading", { name: "AI Engine" });
+      await waitFor(() => expect(intro()).toBe(text));
+    });
+  }
 });

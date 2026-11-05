@@ -80,10 +80,12 @@ export default function PublikSettings({
     return subscribeBalance(setBalanceState);
   }, []);
 
-  async function continueWithPublik() {
+  /* Set up (mint) and open the link page. `force` re-mints over a
+     disconnected credential; it comes from the status the caller just read. */
+  async function continueWithPublik(force = status?.state === "disconnected") {
     setBusy(true);
     setError(null);
-    const r = await provisionPublik(DISCLOSURE_VERSION, status?.state === "disconnected");
+    const r = await provisionPublik(DISCLOSURE_VERSION, force);
     setBusy(false);
     if (r.ok && r.state === "ready") {
       setStatus(r);
@@ -101,6 +103,40 @@ export default function PublikSettings({
     setError(r.reason === "rate_limited" ? "publik API can't set up another install from this network right now." : copy.unreachable);
   }
 
+  /* "Use publik API" on the set-up card. The card can be out of date (the
+     credential was removed after this panel read it), so read the status
+     again: a ready credential is used as it is; no credential starts the
+     normal set-up and link flow. It never turns on publik mode with no
+     credential. */
+  async function useThisComputer() {
+    setBusy(true);
+    const s = await fetchPublikStatus();
+    setBusy(false);
+    if (s.available && s.state === "ready") {
+      setStatus(s);
+      onActivated();
+      return;
+    }
+    setStatus(s);
+    if (s.available) await continueWithPublik(s.state === "disconnected");
+  }
+
+  /* Disconnect / Forget: the credential is gone, so read the status again.
+     Before, the panel kept its old "ready" status, showed "publik API is set
+     up on this computer", and its "Use publik API" turned on publik mode
+     with no credential. */
+  async function leave(action: () => Promise<PublikStatus>) {
+    setBusy(true);
+    await action();
+    resetBalance();
+    setJustMinted(null);
+    setLinkOpened(false);
+    setError(null);
+    await refresh();
+    setBusy(false);
+    onLeft();
+  }
+
   if (!status) return <p className="mt-5 text-sm text-ink-faint">Checking publik API…</p>;
 
   if (!status.available) {
@@ -113,7 +149,7 @@ export default function PublikSettings({
         <p className="font-semibold">{copy.disconnected}</p>
         {error && <p className="mt-1 text-xs">{error}</p>}
         <div className="mt-3 flex flex-wrap gap-3">
-          <button onClick={continueWithPublik} disabled={busy} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60">
+          <button onClick={() => void continueWithPublik(true)} disabled={busy} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60">
             {busy ? "Reconnecting…" : copy.reconnectLabel}
           </button>
           {onOwnKey && (
@@ -137,7 +173,7 @@ export default function PublikSettings({
   if (status.state !== "ready" || disclosureAck < DISCLOSURE_VERSION) {
     return (
       <div className="mt-5">
-        <PublikDisclosure busy={busy} error={error} onContinue={continueWithPublik} onOwnKey={onOwnKey} />
+        <PublikDisclosure busy={busy} error={error} onContinue={() => void continueWithPublik()} onOwnKey={onOwnKey} />
       </div>
     );
   }
@@ -150,12 +186,14 @@ export default function PublikSettings({
           {copy.readyTitle}
         </p>
         <p className="mt-1 text-sm text-ink-dim">{copy.rate}</p>
+        {error && <p className="mt-2 text-xs font-semibold text-danger-ink">{error}</p>}
         <button
           type="button"
-          onClick={onActivated}
-          className="mt-4 rounded-xl bg-accent px-5 py-2.5 font-display font-bold text-white hover:bg-accent-hover"
+          onClick={() => void useThisComputer()}
+          disabled={busy}
+          className="mt-4 rounded-xl bg-accent px-5 py-2.5 font-display font-bold text-white hover:bg-accent-hover disabled:opacity-60"
         >
-          {copy.useLabel}
+          {busy ? "Setting up…" : copy.useLabel}
         </button>
       </div>
     );
@@ -264,22 +302,16 @@ export default function PublikSettings({
 
       <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-edge pt-3">
         <button
-          onClick={async () => {
-            await disconnectPublik();
-            resetBalance();
-            onLeft();
-          }}
+          onClick={() => void leave(disconnectPublik)}
+          disabled={busy}
           className="text-xs font-semibold text-ink-faint hover:text-danger-ink"
         >
           {anonymous ? copy.forgetLabel : copy.disconnectLabel}
         </button>
         {!anonymous && (
           <button
-            onClick={async () => {
-              await forgetPublik();
-              resetBalance();
-              onLeft();
-            }}
+            onClick={() => void leave(forgetPublik)}
+            disabled={busy}
             className="text-xs font-semibold text-ink-faint hover:text-danger-ink"
           >
             {copy.forgetLabel}

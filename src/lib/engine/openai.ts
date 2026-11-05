@@ -100,6 +100,9 @@ export class OpenAIEngine implements Engine {
        thinking counts against the same cap, so the text can be cut short or
        be empty; either way the caller must know (truncatedError). */
     let finishReason: string | null = null;
+    /* True when the model reported reasoning: reasoning text in the stream,
+       or reasoning tokens in the last chunk's usage (publik API sends it). */
+    let reasoned = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -121,13 +124,14 @@ export class OpenAIEngine implements Engine {
           }
           const finish: unknown = json.choices?.[0]?.finish_reason;
           if (typeof finish === "string" && finish) finishReason = finish;
+          if (reportsReasoning(json.choices?.[0]?.delta, json.usage)) reasoned = true;
         } catch {
           /* malformed SSE chunk; skip it */
         }
       }
     }
     if (finishReason === "length") {
-      throw truncatedError(full, cappedToFrom(res.headers.get("x-publik-output-capped")));
+      throw truncatedError(full, cappedToFrom(res.headers.get("x-publik-output-capped")), reasoned);
     }
     return full;
   }
@@ -151,7 +155,11 @@ export class OpenAIEngine implements Engine {
     // A cut-off JSON answer is not parseable; say what happened instead of
     // letting "Unexpected end of JSON input" reach the screen.
     if (json.choices?.[0]?.finish_reason === "length") {
-      throw truncatedError(typeof content === "string" ? content : "", cappedToFrom(res.headers.get("x-publik-output-capped")));
+      throw truncatedError(
+        typeof content === "string" ? content : "",
+        cappedToFrom(res.headers.get("x-publik-output-capped")),
+        reportsReasoning(json.choices?.[0]?.message, json.usage),
+      );
     }
     if (typeof content !== "string") {
       throw new EngineError(`${this.label()} returned no structured content.`, "unknown");
@@ -469,4 +477,14 @@ async function mapError(res: Response, provider: "openai" | "publik"): Promise<E
   if (res.status === 429) return new EngineError(message, "rate_limit");
   if (res.status === 403) return new EngineError(message, "model_missing");
   return new EngineError(message, "unknown");
+}
+
+/* Did the model report reasoning (thinking)? Reasoning text in a stream
+   delta or a message (`reasoning` / `reasoning_content`), or reasoning tokens
+   in `usage.completion_tokens_details`. */
+function reportsReasoning(part: unknown, usage: unknown): boolean {
+  const p = (part ?? {}) as { reasoning?: unknown; reasoning_content?: unknown };
+  if ((typeof p.reasoning === "string" && p.reasoning) || (typeof p.reasoning_content === "string" && p.reasoning_content)) return true;
+  const n = (usage as { completion_tokens_details?: { reasoning_tokens?: unknown } } | null | undefined)?.completion_tokens_details?.reasoning_tokens;
+  return typeof n === "number" && n > 0;
 }
