@@ -124,6 +124,12 @@ describe("Website link — downloaded by the local server (round 5)", () => {
     expect(calls[0]).toBe(`/api/fetch-page?url=${encodeURIComponent("https://en.wikipedia.org/wiki/Photosynthesis")}`);
   });
 
+  it("D1 (round 8): the note keeps the https:// link, not the bare text that was pasted", async () => {
+    serve(ARTICLE, "text/html");
+    const res = await ingest({ kind: "url", url: " en.wikipedia.org/wiki/Photosynthesis " });
+    expect(res.meta?.url).toBe("https://en.wikipedia.org/wiki/Photosynthesis");
+  });
+
   it("a page over the 8 MB download cap says 8 MB, not 2 MB", async () => {
     serveError(413, { error: "too_large", limit: 8 * 1024 * 1024 });
     const err = (await ingest({ kind: "url", url: "https://example.com/huge.html" }).catch((e: Error) => e)) as Error;

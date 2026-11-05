@@ -378,6 +378,50 @@ describe("the app's own calls still work (positive)", () => {
     expect(calls.extract).toEqual([]);
   });
 
+  it("D4 (round 8): youtube-extract refuses a link that is not YouTube with 400 and words; yt-dlp never runs", async () => {
+    const NOT_YOUTUBE = "That is not a YouTube link. NitroAI sends only youtube.com and youtu.be links to yt-dlp. Use \"Website link\" for other pages.";
+    for (const bad of [
+      `http://127.0.0.1:${app.port}/api/publik/status`,
+      "http://localhost:41763/api/publik/wallet",
+      "http://[::1]:41763/",
+      "http://169.254.169.254/latest/meta-data/",
+      "https://example.com/watch?v=jNQXAC9IVRw",
+      "https://youtube.com.evil.example/watch?v=jNQXAC9IVRw",
+      "https://evilyoutube.com/watch?v=jNQXAC9IVRw",
+      "https://youtu.be.evil.example/jNQXAC9IVRw",
+      "https://www.youtube.com:8443/watch?v=jNQXAC9IVRw",
+      "https://user:pass@www.youtube.com/watch?v=jNQXAC9IVRw",
+      "https://www.youtube.com@127.0.0.1/watch?v=jNQXAC9IVRw",
+    ]) {
+      const r = await own("POST", "/api/youtube-extract", JSON.stringify({ url: bad }));
+      expect(r.status, bad).toBe(400);
+      expect(JSON.parse(r.text), bad).toEqual({ error: NOT_YOUTUBE });
+    }
+    expect(calls.extract).toEqual([]);
+  });
+
+  it("D4 (round 8): youtube.com, its subdomains, youtu.be and youtube-nocookie.com still reach yt-dlp, as the parsed link", async () => {
+    const good = [
+      "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "https://youtube.com/watch?v=jNQXAC9IVRw",
+      "https://m.youtube.com/watch?v=jNQXAC9IVRw",
+      "https://music.youtube.com/watch?v=jNQXAC9IVRw",
+      "https://youtu.be/jNQXAC9IVRw",
+      "https://www.youtube-nocookie.com/embed/jNQXAC9IVRw",
+      "https://youtube-nocookie.com/embed/jNQXAC9IVRw",
+      "http://WWW.YouTube.com/shorts/jNQXAC9IVRw",
+    ];
+    for (const link of good) {
+      const r = await own("POST", "/api/youtube-extract", JSON.stringify({ url: link }));
+      expect(r.status, link).toBe(200);
+    }
+    // A backslash before "@" is a path in the URL standard, but Python can
+    // read it as a user name before host 127.0.0.1. yt-dlp gets the parsed link.
+    const odd = await own("POST", "/api/youtube-extract", JSON.stringify({ url: "https://www.youtube.com\\@127.0.0.1/" }));
+    expect(odd.status).toBe(200);
+    expect(calls.extract).toEqual([...good.slice(0, -1), "http://www.youtube.com/shorts/jNQXAC9IVRw", "https://www.youtube.com/@127.0.0.1/"]);
+  });
+
   it("the static app (not /api) needs no header", async () => {
     const r = await send({ path: "/", headers: {} });
     expect(r.status).toBe(200);

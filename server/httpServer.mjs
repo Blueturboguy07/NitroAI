@@ -25,6 +25,7 @@ import { provision, status } from "./ollama.mjs";
 import { createPublikHandler } from "./publikProxy.mjs";
 import { handleFetchPage } from "./fetchPage.mjs";
 import { refuseLocalRequest, sendRefused } from "./localGuard.mjs";
+import { checkYoutubeLink } from "./youtubeLink.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -118,18 +119,13 @@ async function handleApi(req, res, url, opts) {
     // POST: on first use it downloads yt-dlp, and it always downloads media.
     if (req.method !== "POST") return sendJson(res, 405, { error: "use POST" });
     const { url: target } = await readSmallJson(req);
-    if (typeof target !== "string" || !target) return sendJson(res, 400, { error: "missing url" });
-    // Only an http(s) link. A value that starts with "-" must never reach
-    // yt-dlp as an option (ytdlp.mjs also puts "--" before the link).
-    let link;
+    // Only a YouTube link (youtubeLink.mjs): never 127.0.0.1 or another
+    // site, and never a value that starts with "-" (ytdlp.mjs also puts "--"
+    // before the link).
+    const link = checkYoutubeLink(target);
+    if (link.error) return sendJson(res, 400, { error: link.error });
     try {
-      link = new URL(target);
-    } catch {
-      return sendJson(res, 400, { error: "not a link" });
-    }
-    if (link.protocol !== "http:" && link.protocol !== "https:") return sendJson(res, 400, { error: "not a link" });
-    try {
-      const result = await extractYoutube(target, opts.binDir);
+      const result = await extractYoutube(link.url, opts.binDir);
       return sendJson(res, 200, result);
     } catch (err) {
       return sendJson(res, 502, { error: err instanceof Error ? err.message : "extraction failed" });

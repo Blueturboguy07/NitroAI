@@ -88,9 +88,17 @@ function blockedV6(ip) {
   const v4 = (hi, lo) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
   if (g.every((x) => x === 0)) return true; // :: unspecified
   if (g.slice(0, 7).every((x) => x === 0) && g[7] === 1) return true; // ::1 loopback
-  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return blockedV4(v4(g[6], g[7])); // ::ffff:a.b.c.d
+  // IPv6 forms with an IPv4 address inside: the inner address is checked.
+  if (g.slice(0, 5).every((x) => x === 0) && g[5] === 0xffff) return blockedV4(v4(g[6], g[7])); // ::ffff:a.b.c.d (mapped)
+  if (g.slice(0, 4).every((x) => x === 0) && g[4] === 0xffff && g[5] === 0) return blockedV4(v4(g[6], g[7])); // ::ffff:0:a.b.c.d (translated, ::ffff:0:0/96)
   if (g.slice(0, 6).every((x) => x === 0)) return blockedV4(v4(g[6], g[7])); // ::a.b.c.d (old form)
-  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return blockedV4(v4(g[6], g[7])); // NAT64
+  if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0)) return blockedV4(v4(g[6], g[7])); // 64:ff9b::/96 NAT64
+  if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return true; // 64:ff9b:1::/48 local-use NAT64
+  if (g[0] === 0x2002) return blockedV4(v4(g[1], g[2])); // 2002::/16 6to4
+  if (g[0] === 0x2001 && g[1] === 0) {
+    // 2001::/32 Teredo: the server's IPv4 in plain, the client's inverted.
+    return blockedV4(v4(g[2], g[3])) || blockedV4(v4(~g[6] & 0xffff, ~g[7] & 0xffff));
+  }
   if ((g[0] & 0xfe00) === 0xfc00) return true; // fc00::/7 unique local (private)
   if ((g[0] & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
   if ((g[0] & 0xffc0) === 0xfec0) return true; // fec0::/10 old site-local
@@ -186,11 +194,22 @@ function checkTarget(u) {
   if (u.username || u.password) throw new PageError("bad_url");
 }
 
+/* At most this many Content-Encoding layers are unpacked (round 8, I2). */
+export const MAX_ENCODINGS = 2;
+
 function decoders(encoding) {
   const list = String(encoding ?? "")
     .split(",")
     .map((e) => e.trim().toLowerCase())
     .filter((e) => e && e !== "identity");
+  if (list.length > MAX_ENCODINGS) {
+    throw new PageError("network", {
+      reason: `the site packed the page ${list.length} times, and NitroAI unpacks a page at most ${MAX_ENCODINGS} times`,
+    });
+  }
+  if (list.some((e) => !["gzip", "x-gzip", "deflate", "br"].includes(e))) {
+    throw new PageError("network", { reason: "the site sent data NitroAI cannot unpack" });
+  }
   return list.reverse().map((e) => {
     if (e === "gzip" || e === "x-gzip") return zlib.createGunzip();
     if (e === "deflate") return zlib.createInflate();
@@ -220,25 +239,43 @@ async function download(start, headers, signal, limit, opts) {
       throw new PageError("status", { status });
     }
     const declared = Number(res.headers["content-length"] ?? "");
-    const unpack = decoders(res.headers["content-encoding"]);
+    let unpack;
+    try {
+      unpack = decoders(res.headers["content-encoding"]);
+    } catch (err) {
+      res.destroy();
+      throw err;
+    }
     if (!unpack.length && Number.isFinite(declared) && declared > limit) {
       res.destroy();
       throw new PageError("too_large", { limit });
     }
     const parts = [];
     let total = 0;
-    await pipeline(
-      res,
-      ...unpack,
-      async function (source) {
-        for await (const chunk of source) {
-          total += chunk.length;
-          if (total > limit) throw new PageError("too_large", { limit });
-          parts.push(chunk);
-        }
-      },
-      { signal },
-    );
+    let over = false;
+    try {
+      await pipeline(
+        res,
+        ...unpack,
+        async function (source) {
+          for await (const chunk of source) {
+            total += chunk.length;
+            if (total > limit) {
+              over = true;
+              throw new PageError("too_large", { limit });
+            }
+            parts.push(chunk);
+          }
+        },
+        { signal },
+      );
+    } catch (err) {
+      // Some Node versions (seen: 18.20, 21.5, 22.23 and 24.7; not 24.18)
+      // report the stop as an AbortError, not as the error thrown above
+      // (round 8, D2). The flag says what happened.
+      if (over) throw new PageError("too_large", { limit });
+      throw err;
+    }
     return { body: Buffer.concat(parts), contentType: res.headers["content-type"] ?? "", finalUrl: current.href };
   }
 }

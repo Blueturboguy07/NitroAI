@@ -2,6 +2,7 @@ import type { IngestResult } from "./index";
 import { MAX_TEXT_FILE_BYTES, inspectText, zipFlavor } from "./fileTypes";
 import { cutTitle } from "./text";
 import { localFetch } from "../localApi";
+import { withScheme } from "./link";
 
 /* Stop downloading a page at this size (the local server has the same
    limit, server/fetchPage.mjs). The 2 MB limit applies to the text NitroAI
@@ -111,7 +112,7 @@ export async function ingestUrl(url: string): Promise<IngestResult> {
   try {
     // "en.wikipedia.org/wiki/X" (no scheme) means https. Before, it was
     // fetched as a path on the app's own server.
-    parsed = new URL(/^[a-z][a-z0-9+.-]*:/i.test(typed) ? typed : `https://${typed}`);
+    parsed = new URL(withScheme(typed));
   } catch {
     throw new Error(notALinkMessage(url));
   }
@@ -168,5 +169,5 @@ export async function ingestUrl(url: string): Promise<IngestResult> {
   }
   if (new TextEncoder().encode(text).length > MAX_TEXT_FILE_BYTES) throw new Error(PAGE_TEXT_TOO_LARGE_MESSAGE);
 
-  return { text, title, meta: { url } };
+  return { text, title, meta: { url: withScheme(url) } };
 }

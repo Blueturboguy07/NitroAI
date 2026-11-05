@@ -20,6 +20,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
+import { execFileSync } from "node:child_process";
 import { startServer } from "./httpServer.mjs";
 
 const site = { server: null, port: 0, url: "", requests: [], route: null };
@@ -66,6 +67,14 @@ function defaultRoute(req, res) {
     const enc = u.pathname.slice(1);
     const body = enc === "gzip" ? zlib.gzipSync(ARTICLE) : enc === "deflate" ? zlib.deflateSync(ARTICLE) : zlib.brotliCompressSync(ARTICLE);
     res.writeHead(200, { "content-type": "text/html", "content-encoding": enc, "content-length": String(body.length) });
+    return res.end(body);
+  }
+  if (u.pathname === "/gzip-br" || u.pathname === "/gzip3") {
+    // Content-Encoding lists the layers in the order they were applied.
+    const layers = u.pathname === "/gzip-br" ? ["gzip", "br"] : ["gzip", "gzip", "gzip"];
+    let body = Buffer.from(ARTICLE);
+    for (const l of layers) body = l === "gzip" ? zlib.gzipSync(body) : zlib.brotliCompressSync(body);
+    res.writeHead(200, { "content-type": "text/html", "content-encoding": layers.join(", "), "content-length": String(body.length) });
     return res.end(body);
   }
   if (u.pathname === "/bomb") {
@@ -316,6 +325,12 @@ describe("GET /api/fetch-page — SSRF, more ranges and spellings (round 6, item
     "http://[fe80::1]/",
     "http://[::ffff:10.0.0.1]/",
     "http://[64:ff9b::a9fe:a9fe]/",
+    // Round 8, I1: IPv4 inside IPv6 (translated, NAT64 local-use, 6to4, Teredo).
+    "http://[::ffff:0:a9fe:a9fe]/",
+    "http://[64:ff9b:1::a00:1]/",
+    "http://[2002:a9fe:a9fe::]/",
+    "http://[2002:c0a8:101::1]/",
+    "http://[2001:0:4136:e378:8000:63bf:80ff:fffe]/",
     "http://224.0.0.1/",
     "http://255.255.255.255/",
   ];
@@ -367,6 +382,21 @@ describe("GET /api/fetch-page — SSRF, more ranges and spellings (round 6, item
     expect(site.requests.every((q) => q.url.startsWith("/go?"))).toBe(true);
   });
 
+  it("round 8, I1: refuses a name that resolves to IPv4 inside IPv6 (translated, NAT64, 6to4, Teredo)", async () => {
+    const names = {
+      "translated.test": ["::ffff:0:7f00:1"],
+      "nat64.test": ["64:ff9b:1::a00:1"],
+      "sixtofour.test": ["2002:7f00:1::1"],
+      "teredo.test": ["2001:0:4136:e378:8000:63bf:80ff:fffe"],
+    };
+    await boot({ names });
+    for (const name of Object.keys(names)) {
+      const r = await get(`http://${name}:${site.port}/wiki/Photosynthesis`);
+      expect(r.json, name).toEqual(BLOCKED);
+    }
+    expect(site.requests).toEqual([]);
+  });
+
   it("with the real DNS, localhost is refused and nothing connects", async () => {
     await boot({ realDns: true });
     const r = await get(`http://localhost:${site.port}/wiki/Photosynthesis`);
@@ -415,4 +445,132 @@ describe("GET /api/fetch-page — SSRF, more ranges and spellings (round 6, item
       expect(blockedAddress(ip), ip).toBe(false);
     }
   });
+});
+
+/* Round 8. Each test here fails on 013eaed. */
+describe("GET /api/fetch-page — round 8", () => {
+  it("I2: at most 2 Content-Encoding layers are unpacked; 3 are refused in words", async () => {
+    await boot();
+    const two = await get(`${site.url}/gzip-br`);
+    expect(two.status).toBe(200);
+    expect(two.body.toString("utf8")).toBe(ARTICLE);
+    const three = await get(`${site.url}/gzip3`);
+    expect(three.status).toBe(502);
+    expect(three.json).toEqual({ error: "network", reason: "the site packed the page 3 times, and NitroAI unpacks a page at most 2 times" });
+  });
+
+  it("I1: the IPv4-translated form ::ffff:0:a.b.c.d of the app's own address is refused", async () => {
+    await boot();
+    for (const t of [`http://[::ffff:0:7f00:1]:${app.port}/api/publik/status`, `http://[::ffff:0:127.0.0.1]:${app.port}/api/health`]) {
+      const r = await get(t);
+      expect(r.json, t).toEqual(BLOCKED);
+    }
+  });
+
+  it("I1: IPv4 inside IPv6 (translated, NAT64, 6to4, Teredo) is checked by its IPv4 address", async () => {
+    const { blockedAddress } = await import("./fetchPage.mjs");
+    for (const ip of [
+      "::ffff:0:7f00:1", "::ffff:0:127.0.0.1", "::ffff:0:a9fe:a9fe", "::ffff:0:a00:1", // ::ffff:0:0/96
+      "64:ff9b::a00:1", "64:ff9b::c0a8:101", "64:ff9b:1::a00:1", "64:ff9b:1::808:808", // NAT64 (and the local-use /48)
+      "2002:7f00:1::", "2002:a00:1::1", "2002:c0a8:101::1", "2002:a9fe:a9fe::", "2002:ac10:1::", "2002::", // 6to4 with a private inner IPv4
+      "2001:0:4136:e378:8000:63bf:80ff:fffe", "2001:0:a00:1:8000:63bf:f7f7:f7f7", // Teredo: client 127.0.0.1; server 10.0.0.1
+    ]) {
+      expect(blockedAddress(ip), ip).toBe(true);
+    }
+    for (const ip of ["2002:808:808::1", "2002:5db8:d70e::", "2001:0:4136:e378:8000:63bf:f7f7:f7f7", "::ffff:0:808:808"]) {
+      expect(blockedAddress(ip), ip).toBe(false);
+    }
+  });
+});
+
+/* Round 8, D2: the /bomb cap gave 502 instead of 413 on Node 18, 21 and 22
+   (the stop came back as an AbortError). This runs the same three cases in
+   every Node from 18 up that is on this computer (and in NITROAI_TEST_NODES,
+   a list of node paths). The app ships Node 24; the server code must be
+   right on 18–24 too. */
+function nodeBinaries() {
+  const found = new Map();
+  const candidates = [process.execPath, ...(process.env.NITROAI_TEST_NODES ?? "").split(path.delimiter).filter(Boolean)];
+  const globs = [
+    ["/opt/homebrew/opt", /^node@\d+$/, "bin/node"],
+    ["/usr/local/opt", /^node@\d+$/, "bin/node"],
+    [path.join(os.homedir(), ".nvm/versions/node"), /^v\d+/, "bin/node"],
+  ];
+  for (const [base, re, tail] of globs) {
+    try {
+      for (const n of fs.readdirSync(base)) if (re.test(n)) candidates.push(path.join(base, n, tail));
+    } catch {
+      /* not here */
+    }
+  }
+  candidates.push("/usr/local/bin/node", "/opt/homebrew/bin/node");
+  for (const bin of candidates) {
+    try {
+      const v = execFileSync(bin, ["--version"], { encoding: "utf8", timeout: 10_000 }).trim();
+      if (Number(v.slice(1).split(".")[0]) >= 18 && !found.has(v)) found.set(v, bin);
+    } catch {
+      /* not a node */
+    }
+  }
+  return [...found.entries()];
+}
+
+const CAP_SCRIPT = `
+import http from "node:http";
+import zlib from "node:zlib";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+const { startServer } = await import(process.argv[2]);
+const pages = {
+  "/bomb": ["gzip", zlib.gzipSync(Buffer.alloc(60000))],
+  "/bomb-br": ["br", zlib.brotliCompressSync(Buffer.alloc(60000))],
+  "/bomb-deflate": ["deflate", zlib.deflateSync(Buffer.alloc(60000))],
+};
+const site = http.createServer((req, res) => {
+  const [enc, body] = pages[req.url];
+  res.writeHead(200, { "content-type": "text/html", "content-encoding": enc, "content-length": String(body.length) });
+  res.end(body);
+});
+await new Promise((r) => site.listen(0, "127.0.0.1", r));
+const sp = site.address().port;
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nitroai-cap-"));
+fs.mkdirSync(path.join(dir, "dist"));
+fs.writeFileSync(path.join(dir, "dist", "index.html"), "x");
+const resolve = (h, o, cb) => cb(null, [{ address: "127.0.0.1", family: 4 }]);
+const app = await startServer({ distDir: path.join(dir, "dist"), port: 0, fetchPage: { maxBytes: 4000, resolve, allowHosts: ["site.test:" + sp] } });
+const out = {};
+for (const p of Object.keys(pages)) {
+  out[p] = await new Promise((ok) =>
+    http.get({ host: "127.0.0.1", port: app.port, path: "/api/fetch-page?url=" + encodeURIComponent("http://site.test:" + sp + p), headers: { "x-nitroai-app": "1", "x-nitroai-fetch": "1" } }, (res) => {
+      let b = "";
+      res.on("data", (c) => (b += c));
+      res.on("end", () => ok(res.statusCode + " " + b));
+    }),
+  );
+}
+console.log(JSON.stringify(out));
+app.server.close();
+site.close();
+fs.rmSync(dir, { recursive: true, force: true });
+`;
+
+describe("GET /api/fetch-page — the unpacked-size cap on every Node 18+ here (round 8, D2)", () => {
+  it("a gzip, br or deflate bomb is 413 too_large, not 502", () => {
+    const script = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "nitroai-cap-script-")), "cap.mjs");
+    fs.writeFileSync(script, CAP_SCRIPT);
+    const server = new URL("./httpServer.mjs", import.meta.url).href;
+    const results = {};
+    for (const [version, bin] of nodeBinaries()) {
+      const out = execFileSync(bin, [script, server], { encoding: "utf8", timeout: 60_000 }).trim().split("\n").pop();
+      results[version] = JSON.parse(out);
+    }
+    fs.rmSync(path.dirname(script), { recursive: true, force: true });
+    const too = '413 {"error":"too_large","limit":4000}';
+    // One compare for all versions, so a failure lists every Node that is wrong.
+    const want = Object.fromEntries(Object.keys(results).map((v) => [v, { "/bomb": too, "/bomb-br": too, "/bomb-deflate": too }]));
+    expect(results).toEqual(want);
+    expect(Object.keys(results).length).toBeGreaterThanOrEqual(1);
+    console.log(`fetch-page cap checked on: ${Object.keys(results).join(", ")}`);
+  }, 120_000);
 });

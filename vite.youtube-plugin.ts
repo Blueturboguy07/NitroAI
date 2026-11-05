@@ -20,6 +20,8 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { extractYoutube } from "./server/ytdlp.mjs";
 // @ts-expect-error — plain-JS Node module, no type declarations
 import { refuseLocalRequest, sendRefused } from "./server/localGuard.mjs";
+// @ts-expect-error — plain-JS Node module, no type declarations
+import { checkYoutubeLink } from "./server/youtubeLink.mjs";
 
 const CACHE_DIR = path.join(process.cwd(), "node_modules", ".cache", "nitroai");
 const MAX_BODY = 16 * 1024;
@@ -66,15 +68,10 @@ function middleware(): Connect.NextHandleFunction {
     if (req.method !== "POST") return send(405, { error: "use POST" });
 
     void readJson(req).then(({ url: target }) => {
-      if (typeof target !== "string" || !target) return send(400, { error: "missing url" });
-      let link: URL;
-      try {
-        link = new URL(target);
-      } catch {
-        return send(400, { error: "not a link" });
-      }
-      if (link.protocol !== "http:" && link.protocol !== "https:") return send(400, { error: "not a link" });
-      extractYoutube(target, CACHE_DIR)
+      // Only a YouTube link (server/youtubeLink.mjs), as in the desktop app.
+      const link: { url?: string; error?: string } = checkYoutubeLink(target);
+      if (link.error) return send(400, { error: link.error });
+      extractYoutube(link.url, CACHE_DIR)
         .then((result: unknown) => send(200, result))
         .catch((err: unknown) => send(502, { error: err instanceof Error ? err.message : "extraction failed" }));
     });
