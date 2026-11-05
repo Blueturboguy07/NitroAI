@@ -91,10 +91,21 @@ export default function Assistant({
     setStreaming("");
     try {
       let acc = "";
-      const full = await chatAnswer(engine, note, history, modelQuestion, (d) => {
-        acc += d;
-        setStreaming(acc);
-      });
+      const full = await chatAnswer(
+        engine,
+        note,
+        history,
+        modelQuestion,
+        (d) => {
+          acc += d;
+          setStreaming(acc);
+        },
+        // A second try (content filter, early stop) starts the answer again.
+        () => {
+          acc = "";
+          setStreaming("");
+        },
+      );
       const asst: ChatTurn = {
         id: uuid(),
         noteId: note.id,

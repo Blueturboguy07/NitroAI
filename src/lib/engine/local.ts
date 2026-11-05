@@ -16,7 +16,7 @@ import type {
   TranscriptResult,
   TtsOptions,
 } from "./types";
-import { EngineError, truncatedError } from "./types";
+import { EngineError, incompleteError, truncatedError } from "./types";
 
 const DEFAULT_BASE_URL = "http://localhost:11434";
 /* qwen2.5:3b — a ~1.9 GB download that runs on modest laptops and is
@@ -54,6 +54,9 @@ export class LocalEngine implements Engine {
     let buffer = "";
     let full = "";
     let doneReason: string | null = null;
+    // Ollama ends a whole answer with {done: true}. A stream that stops
+    // without it was cut (Ollama quit, or the connection dropped).
+    let finished = false;
     // A thinking model (qwen3, deepseek-r1 …) streams its thinking apart.
     let reasoned = false;
 
@@ -74,6 +77,7 @@ export class LocalEngine implements Engine {
             onToken?.(delta);
           }
           if (typeof json.message?.thinking === "string" && json.message.thinking) reasoned = true;
+          if (json.done === true) finished = true;
           if (json.done === true && typeof json.done_reason === "string") doneReason = json.done_reason;
         } catch {
           /* malformed line; skip it */
@@ -82,6 +86,8 @@ export class LocalEngine implements Engine {
     }
     // num_predict reached (Ollama's finish_reason "length").
     if (doneReason === "length") throw truncatedError(full, undefined, reasoned);
+    if (!finished) throw incompleteError(full, "none");
+    if (doneReason && doneReason !== "stop") throw incompleteError(full, doneReason);
     return full;
   }
 

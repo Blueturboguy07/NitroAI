@@ -16,7 +16,8 @@ import type {
   TranscriptResult,
   TtsOptions,
 } from "./types";
-import { EngineError, truncatedError } from "./types";
+import { EngineError, incompleteError, truncatedError } from "./types";
+import { stripRefusal } from "./refusal";
 
 const BASE_URL = "https://api.anthropic.com/v1";
 const API_VERSION = "2023-06-01";
@@ -95,8 +96,13 @@ export class AnthropicEngine implements Engine {
         }
       }
     }
-    if (stopReason === "max_tokens") throw truncatedError(full, undefined, reasoned);
-    return full;
+    // Only "end_turn" / "stop_sequence" is a whole answer. "refusal" (the
+    // safety filter), any other reason, or none at all is incomplete.
+    const { text, refusal } = stripRefusal(full);
+    if (refusal) throw incompleteError(text, "content_filter");
+    if (stopReason === "end_turn" || stopReason === "stop_sequence") return full;
+    if (stopReason === "max_tokens") throw truncatedError(text, undefined, reasoned);
+    throw incompleteError(text, stopReason ?? "none");
   }
 
   async structured<T>(opts: StructuredOptions<T>): Promise<T> {
@@ -124,6 +130,7 @@ export class AnthropicEngine implements Engine {
       const thought = (json.content ?? []).some((b: { type?: string }) => b.type === "thinking");
       throw truncatedError("", undefined, thought);
     }
+    if (json.stop_reason !== "tool_use" && json.stop_reason !== "end_turn") throw incompleteError("", typeof json.stop_reason === "string" && json.stop_reason ? json.stop_reason : "none");
     const blocks: Array<{ type: string; name?: string; input?: unknown }> = json.content ?? [];
     const block = blocks.find((b) => b.type === "tool_use" && b.name === toolName);
     if (!block) {

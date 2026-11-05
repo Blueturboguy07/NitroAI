@@ -100,8 +100,78 @@ export function samplesPerChunk(maxBytes: number): number {
   return Math.max(1, Math.floor((maxBytes - WAV_HEADER_BYTES) / 2));
 }
 
+/* The audio types Whisper (whisper-1, behind publik API and OpenAI) reads.
+   It goes by the file name's extension: an M4A sent as "audio.webm" got 400
+   "Invalid file format" (every M4A under 3.94 MB, NitroAI 0.2.0–0.2.3). */
+const UPLOAD_TYPES = {
+  m4a: "audio/mp4",
+  mp4: "video/mp4",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  webm: "audio/webm",
+  flac: "audio/flac",
+  mpeg: "audio/mpeg",
+  mpga: "audio/mpeg",
+  oga: "audio/ogg",
+} as const;
+export type UploadExt = keyof typeof UPLOAD_TYPES;
+
+const MIME_EXT: Record<string, UploadExt> = {
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/m4a": "m4a",
+  "video/mp4": "mp4",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/wave": "wav",
+  "audio/ogg": "ogg",
+  "video/ogg": "ogg",
+  "audio/webm": "webm",
+  "video/webm": "webm",
+  "audio/flac": "flac",
+  "audio/x-flac": "flac",
+};
+
+/* The container in the first bytes, or null. */
+export function sniffAudioExt(b: Uint8Array): UploadExt | null {
+  const ascii = (at: number, word: string) => word.split("").every((c, i) => b[at + i] === c.charCodeAt(0));
+  if (ascii(0, "RIFF") && ascii(8, "WAVE")) return "wav";
+  if (ascii(0, "OggS")) return "ogg";
+  if (ascii(0, "fLaC")) return "flac";
+  if (b[0] === 0x1a && b[1] === 0x45 && b[2] === 0xdf && b[3] === 0xa3) return "webm"; // EBML (WebM / Matroska)
+  if (ascii(4, "ftyp")) {
+    // Audio-only MPEG-4 brands are .m4a; anything else (isom, mp42, qt) is .mp4.
+    const brand = String.fromCharCode(b[8] ?? 0, b[9] ?? 0, b[10] ?? 0, b[11] ?? 0);
+    return /^M4[ABP]/.test(brand) ? "m4a" : "mp4";
+  }
+  if (ascii(0, "ID3")) return "mp3";
+  if (b[0] === 0xff && (b[1] & 0xe0) === 0xe0 && (b[1] & 0x06) !== 0) return "mp3"; // MPEG audio frame sync, layer set
+  return null;
+}
+
+/* The name and type a whole file is uploaded with: from its bytes first,
+   then its own file name, then its MIME type. A blob with none of these
+   (the in-app recorder makes WebM) keeps the old "audio.webm". */
+export async function uploadFile(audio: Blob): Promise<{ blob: Blob; filename: string }> {
+  const head = new Uint8Array(await audio.slice(0, 16).arrayBuffer());
+  const name = (audio as Blob & { name?: string }).name ?? "";
+  const fromName = /\.([a-z0-9]+)$/i.exec(name)?.[1]?.toLowerCase();
+  const mime = audio.type.split(";")[0].trim().toLowerCase();
+  const ext: UploadExt =
+    sniffAudioExt(head) ??
+    (fromName && fromName in UPLOAD_TYPES ? (fromName as UploadExt) : undefined) ??
+    MIME_EXT[mime] ??
+    "webm";
+  const type = UPLOAD_TYPES[ext];
+  return { blob: audio.type === type ? audio : new Blob([audio], { type }), filename: `audio.${ext}` };
+}
+
 /* The entry point. Small files pass through untouched (whatever container
-   they came in); large ones come back as ≤ maxBytes WAV pieces. */
+   they came in), named for their real type; large ones come back as
+   ≤ maxBytes WAV pieces. */
 export async function chunkAudioForUpload(
   audio: Blob,
   { maxBytes = MAX_UPLOAD_BYTES, decode = browserDecode, targetRate = TARGET_SAMPLE_RATE }: {
@@ -110,7 +180,7 @@ export async function chunkAudioForUpload(
     targetRate?: number;
   } = {},
 ): Promise<AudioChunk[]> {
-  if (audio.size <= maxBytes) return [{ blob: audio, filename: "audio.webm", offsetSeconds: 0 }];
+  if (audio.size <= maxBytes) return [{ ...(await uploadFile(audio)), offsetSeconds: 0 }];
   const mono = toMono16k(await decode(audio), targetRate);
   const per = samplesPerChunk(maxBytes);
   const chunks: AudioChunk[] = [];

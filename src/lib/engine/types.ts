@@ -109,6 +109,14 @@ export interface EngineErrorDetail {
      answer — reasoning tokens in `usage`, or reasoning text in the stream.
      Only then do the messages say the length limit went on "thinking". */
   reasoning?: boolean;
+  /* kind "incomplete": why the answer did not end cleanly. The provider's
+     finish reason ("content_filter", "error", "refusal" …), or "none" when
+     the stream ended with no finish reason at all. */
+  finishReason?: string;
+  /* kind "incomplete": the host that served the answer, when the stream
+     names it (OpenRouter sends "provider" in each chunk). For the report
+     only; never shown as the reason. */
+  upstreamProvider?: string;
 }
 
 /* Raised by engines for user-actionable failures (bad key, quota, model
@@ -127,6 +135,11 @@ export class EngineError extends Error {
       | "credit"
       /* The answer hit the output cap before it was finished (detail.partialText). */
       | "truncated"
+      /* The answer did not end cleanly for another reason: the provider's
+         content filter stopped it, the provider reported an error, or the
+         stream ended with no finish reason (detail.finishReason,
+         detail.partialText). Never saved as if it were whole. */
+      | "incomplete"
       | "unknown" = "unknown",
     readonly detail: EngineErrorDetail = {},
   ) {
@@ -158,6 +171,37 @@ export function truncatedError(partialText: string, cappedTo?: number, reasoning
     ...(reasoning ? { reasoning } : {}),
   });
 }
+
+/* The one error every engine raises when an answer does not end with a clean
+   "stop" and the reason is not the length limit. On 2026-11-05 the release
+   smoke test of NitroAI 0.2.3 made two long notes from the same public-domain
+   lecture. In both, one call (a section on the Mac, the merge on Windows)
+   ended with finish_reason "content_filter", and the engine took it as whole.
+   The Windows note stopped mid-sentence, and the provider's refusal text
+   ("The request was rejected because it was considered high risk") was the
+   last line of the note. `partialText` is the text before the stop, with the
+   refusal text taken out. */
+export function incompleteError(partialText: string, finishReason: string, upstreamProvider?: string): EngineError {
+  const message = isFilterReason(finishReason)
+    ? "The AI provider's safety filter stopped the answer before it was finished."
+    : finishReason === "none"
+      ? "The answer stopped before it was finished: the connection to the AI ended early."
+      : `The answer stopped before it was finished (the AI reported "${finishReason}").`;
+  return new EngineError(message, "incomplete", {
+    partialText,
+    finishReason,
+    ...(upstreamProvider ? { upstreamProvider } : {}),
+  });
+}
+
+/* "content_filter" (OpenAI dialect), "refusal" (Anthropic), "safety" /
+   "recitation" / "prohibited_content" (Gemini through OpenRouter). */
+export function isFilterReason(reason: string | undefined): boolean {
+  return !!reason && /content_filter|refusal|safety|recitation|prohibited|blocklist|spii/i.test(reason);
+}
+
+export const isIncomplete = (e: unknown): boolean => e instanceof EngineError && e.kind === "incomplete";
+export const isFiltered = (e: unknown): boolean => e instanceof EngineError && e.kind === "incomplete" && isFilterReason(e.detail.finishReason);
 
 /* x-publik-output-capped: "<served>/<asked>" — the cap publik actually served. */
 export function cappedToFrom(header: string | null | undefined): number | undefined {

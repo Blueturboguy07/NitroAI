@@ -27,6 +27,10 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 /* Typed wrapper around vi.fn() so `.mock.calls[n]` comes back as
    [url, init?] instead of an inferred empty tuple. */
+/* The clean end of a stream: only finish_reason "stop" is a whole answer
+   (round 9). Every fixture of a whole answer sends it. */
+const STOP = `data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`;
+
 function mockFetch(impl: (url: string, init?: RequestInit) => Response | Promise<Response>) {
   return vi.fn(impl);
 }
@@ -40,6 +44,7 @@ describe("OpenAIEngine", () => {
     const chunks = [
       `data: ${JSON.stringify({ choices: [{ delta: { content: "Hello" } }] })}\n\n`,
       `data: ${JSON.stringify({ choices: [{ delta: { content: " world" } }] })}\n\n`,
+      STOP,
       `data: [DONE]\n\n`,
     ];
     const fetchMock = mockFetch(async () => streamResponse(chunks));
@@ -64,7 +69,7 @@ describe("OpenAIEngine", () => {
   });
 
   it("complete() uses the strong-tier model and a constructor override", async () => {
-    const fetchMock = mockFetch(async () => streamResponse(["data: [DONE]\n\n"]));
+    const fetchMock = mockFetch(async () => streamResponse([STOP, "data: [DONE]\n\n"]));
     vi.stubGlobal("fetch", fetchMock);
 
     const strong = new OpenAIEngine("sk-test");
@@ -79,7 +84,7 @@ describe("OpenAIEngine", () => {
   it("structured() parses the JSON content returned by the model", async () => {
     const payload = { name: "Ada", age: 30 };
     const fetchMock = mockFetch(async () =>
-      jsonResponse({ choices: [{ message: { content: JSON.stringify(payload) } }] }),
+      jsonResponse({ choices: [{ message: { content: JSON.stringify(payload) }, finish_reason: "stop" }] }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -145,6 +150,7 @@ describe("AnthropicEngine", () => {
         type: "content_block_delta",
         delta: { type: "text_delta", text: " there" },
       })}\n\n`,
+      `event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" } })}\n\n`,
       `event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`,
     ];
     const fetchMock = mockFetch(async () => streamResponse(chunks));
@@ -172,7 +178,7 @@ describe("AnthropicEngine", () => {
   it("structured() sends a forced tool_choice and parses tool_use input", async () => {
     const payload = { title: "Photosynthesis", topic: "biology" };
     const fetchMock = mockFetch(async () =>
-      jsonResponse({ content: [{ type: "tool_use", name: "note", input: payload }] }),
+      jsonResponse({ content: [{ type: "tool_use", name: "note", input: payload }], stop_reason: "tool_use" }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -298,7 +304,7 @@ describe("OpenAIEngine as the publik provider", () => {
     createEngine({ mode: "cloud", provider: "publik", ...extra });
 
   it("complete() posts to the local proxy with the publik-fast alias and NO Authorization header", async () => {
-    const fetchMock = mockFetch(async () => streamResponse([`data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n\n`, "data: [DONE]\n\n"]));
+    const fetchMock = mockFetch(async () => streamResponse([`data: ${JSON.stringify({ choices: [{ delta: { content: "hi" } }] })}\n\n`, STOP, "data: [DONE]\n\n"]));
     vi.stubGlobal("fetch", fetchMock);
     const text = await publik().complete({ messages: [{ role: "user", content: "hi" }] });
     expect(text).toBe("hi");
@@ -329,7 +335,7 @@ describe("OpenAIEngine as the publik provider", () => {
   });
 
   it("tier strong → publik-balanced; credential model map and a pasted pk_ key are honoured", async () => {
-    const fetchMock = mockFetch(async () => streamResponse(["data: [DONE]\n\n"]));
+    const fetchMock = mockFetch(async () => streamResponse([STOP, "data: [DONE]\n\n"]));
     vi.stubGlobal("fetch", fetchMock);
     await publik().complete({ messages: [{ role: "user", content: "hi" }], tier: "strong" });
     expect(JSON.parse(fetchMock.mock.calls[0][1]?.body as string).model).toBe("publik-balanced");
@@ -343,7 +349,7 @@ describe("OpenAIEngine as the publik provider", () => {
   });
 
   it("the BYO OpenAI path is untouched (URL, model, bearer)", async () => {
-    const fetchMock = mockFetch(async () => streamResponse(["data: [DONE]\n\n"]));
+    const fetchMock = mockFetch(async () => streamResponse([STOP, "data: [DONE]\n\n"]));
     vi.stubGlobal("fetch", fetchMock);
     await createEngine({ mode: "cloud", provider: "openai", apiKey: "sk-test" }).complete({ messages: [{ role: "user", content: "hi" }] });
     const [url, init] = fetchMock.mock.calls[0];
@@ -425,7 +431,7 @@ describe("OpenAIEngine as the publik provider", () => {
     vi.stubGlobal(
       "fetch",
       mockFetch(async () =>
-        new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), {
+        new Response(JSON.stringify({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }] }), {
           status: 200,
           headers: {
             "x-publik-model": "gpt-5.6-luna",
@@ -454,13 +460,13 @@ describe("OpenAIEngine as the publik provider", () => {
       starterRemainingMicros: 99000,
     });
 
-    vi.stubGlobal("fetch", mockFetch(async () => new Response(streamResponse(["data: [DONE]\n\n"]).body, { status: 200, headers: { "x-publik-reserved-micros": "4100" } })));
+    vi.stubGlobal("fetch", mockFetch(async () => new Response(streamResponse([STOP, "data: [DONE]\n\n"]).body, { status: 200, headers: { "x-publik-reserved-micros": "4100" } })));
     await engine.complete({ messages: [{ role: "user", content: "x" }] });
     expect(seen[1]).toMatchObject({ streamed: true, reservedMicros: 4100, balanceMicros: undefined, chargeMicros: undefined });
 
     // The OpenAI path never fires it.
     const openai = createEngine({ mode: "cloud", provider: "openai", apiKey: "sk-x", onUsage: (u) => seen.push(u) });
-    vi.stubGlobal("fetch", mockFetch(async () => jsonResponse({ choices: [{ message: { content: "{}" } }] })));
+    vi.stubGlobal("fetch", mockFetch(async () => jsonResponse({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }] })));
     await openai.structured({ messages: [{ role: "user", content: "x" }], schema: {}, schemaName: "s" });
     expect(seen).toHaveLength(2);
   });
