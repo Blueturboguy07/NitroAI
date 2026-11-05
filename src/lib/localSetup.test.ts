@@ -104,15 +104,27 @@ describe("localSetupStatus", () => {
 });
 
 describe("runLocalSetup", () => {
-  it("forwards the desired model to /api/local/setup as query params", async () => {
+  it("POSTs the desired model to /api/local/setup as JSON, with the app header (round 6: a GET started the download)", async () => {
     const fetchMock = mockFetch(async () => sseResponse([{ phase: "ready" }, { phase: "done", chat: "llama3.1:8b" }]));
     vi.stubGlobal("fetch", fetchMock);
 
     await runLocalSetup(() => {}, undefined, { chatModel: "llama3.1:8b" });
 
-    const url = new URL(fetchMock.mock.calls[0][0] as string, "http://x");
-    expect(url.pathname).toBe("/api/local/setup");
-    expect(url.searchParams.get("chatModel")).toBe("llama3.1:8b");
+    const [path, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/api/local/setup");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual({ chatModel: "llama3.1:8b" });
+    const headers = new Headers(init.headers);
+    expect(headers.get("x-nitroai-app")).toBe("1");
+    expect(headers.get("content-type")).toBe("application/json");
+  });
+
+  it("status sends the app header (the server refuses /api/* without it)", async () => {
+    const fetchMock = mockFetch(async () => jsonResponse({ installed: true, serving: true, hasChatModel: true, hasEmbedModel: true, models: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await localSetupStatus();
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(new Headers(init.headers).get("x-nitroai-app")).toBe("1");
   });
 
   it("reports the actually-provisioned chat model on the terminal 'done' event", async () => {

@@ -1,6 +1,7 @@
 import type { IngestResult } from "./index";
 import { MAX_TEXT_FILE_BYTES, inspectText, zipFlavor } from "./fileTypes";
 import { cutTitle } from "./text";
+import { localFetch } from "../localApi";
 
 /* Stop downloading a page at this size (the local server has the same
    limit, server/fetchPage.mjs). The 2 MB limit applies to the text NitroAI
@@ -13,6 +14,12 @@ const LINK_HELP = "Paste a link to a web page or a YouTube video.";
 export const LINK_SCHEME_MESSAGE = `NitroAI reads http and https links only. ${LINK_HELP}`;
 export const PAGE_DOWNLOAD_TOO_LARGE_MESSAGE = `That page is more than 8 MB to download, and NitroAI downloads up to 8 MB from a link. Save the part you need as a .txt or PDF file and upload that.`;
 export const PAGE_TEXT_TOO_LARGE_MESSAGE = `That page has more than 2 MB of text, and NitroAI reads up to 2 MB. Save the part you need as a .txt or PDF file and upload that.`;
+export const BLOCKED_LINK_MESSAGE = `That link points to this computer or to a private network. NitroAI reads public web pages only. ${LINK_HELP}`;
+
+/* "hello world" is not a link. Before, it became https://hello%20world/. */
+export function notALinkMessage(text: string): string {
+  return `"${text}" is not a link. ${LINK_HELP}`;
+}
 
 class LinkError extends Error {}
 
@@ -55,7 +62,7 @@ async function readCapped(res: Response, max: number): Promise<Uint8Array | null
 async function download(url: string): Promise<{ bytes: Uint8Array | null; contentType: string | null }> {
   let res: Response | null = null;
   try {
-    res = await fetch(`/api/fetch-page?url=${encodeURIComponent(url)}`, { headers: { "x-nitroai-fetch": "1" } });
+    res = await localFetch(`/api/fetch-page?url=${encodeURIComponent(url)}`);
   } catch {
     res = null;
   }
@@ -64,6 +71,7 @@ async function download(url: string): Promise<{ bytes: Uint8Array | null; conten
     const body = (await res.json().catch(() => ({}))) as { error?: string; status?: number; reason?: string };
     if (body.error === "too_large") return { bytes: null, contentType: null };
     if (body.error === "bad_scheme") throw new LinkError(LINK_SCHEME_MESSAGE);
+    if (body.error === "blocked") throw new LinkError(BLOCKED_LINK_MESSAGE);
     if (body.error === "status") throw new Error(`server responded with ${body.status}`);
     if (body.error === "timeout") throw new Error("the site took too long to answer");
     throw new Error(body.reason ?? "the site could not be reached");
@@ -96,15 +104,22 @@ export async function ingestUrl(url: string): Promise<IngestResult> {
     throw new Error("Network access is unavailable in this environment.");
   }
 
+  const typed = url.trim();
+  // A link has no spaces. ("hello world" became https://hello%20world/.)
+  if (!typed || /\s/.test(typed)) throw new Error(notALinkMessage(url));
   let parsed: URL;
   try {
     // "en.wikipedia.org/wiki/X" (no scheme) means https. Before, it was
     // fetched as a path on the app's own server.
-    parsed = new URL(/^[a-z][a-z0-9+.-]*:/i.test(url.trim()) ? url.trim() : `https://${url.trim()}`);
+    parsed = new URL(/^[a-z][a-z0-9+.-]*:/i.test(typed) ? typed : `https://${typed}`);
   } catch {
-    throw new Error(`"${url}" is not a link. ${LINK_HELP}`);
+    throw new Error(notALinkMessage(url));
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(LINK_SCHEME_MESSAGE);
+  const host = parsed.hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".localhost")) throw new Error(BLOCKED_LINK_MESSAGE);
+  // A web site's name has a dot ("example.com"). An IPv6 address is in [ ].
+  if (!host.includes(".") && !host.startsWith("[")) throw new Error(notALinkMessage(url));
 
   let bytes: Uint8Array | null;
   let contentType: string | null;

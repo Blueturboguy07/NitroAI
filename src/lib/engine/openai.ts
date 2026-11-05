@@ -26,6 +26,7 @@ import { EngineError, cappedToFrom, truncatedError } from "./types";
 import { UNREADABLE_AUDIO_MESSAGE } from "../ingest/fileTypes";
 import { unsupportedMessage, type Task } from "./router";
 import { chunkAudioForUpload, type AudioChunk, type AudioDecoder } from "../audio/chunk";
+import { APP_HEADER, isLocalApi } from "../localApi";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const ALL_CAPS: EngineCapabilities = { chat: true, transcription: true, tts: true, embeddings: true };
@@ -330,7 +331,11 @@ export class OpenAIEngine implements Engine {
      renderer — the proxy attaches it. A user-pasted pk_ key (BYO field) rides
      along as Bearer and the proxy honours it. */
   private authHeaders(): Record<string, string> {
-    return this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
+    const h: Record<string, string> = this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
+    // The local proxy refuses a request without the app-only header
+    // (server/localGuard.mjs). It never goes to api.openai.com.
+    if (isLocalApi(this.baseUrl)) h[APP_HEADER] = "1";
+    return h;
   }
 
   private headers(): Record<string, string> {

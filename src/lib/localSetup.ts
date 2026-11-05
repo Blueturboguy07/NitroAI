@@ -12,6 +12,8 @@
  * developer would use it.
  */
 
+import { localFetch } from "./localApi";
+
 export interface LocalSetupEvent {
   phase: "installing" | "starting" | "pulling" | "log" | "ready" | "done" | "error";
   message?: string;
@@ -52,7 +54,7 @@ export async function localSetupStatus(desired?: DesiredModels): Promise<{
   models: string[];
 } | null> {
   try {
-    const res = await fetch(`/api/local/status${query(desired)}`, {
+    const res = await localFetch(`/api/local/status${query(desired)}`, {
       signal: AbortSignal.timeout(2500),
     });
     if (!res.ok) return null;
@@ -75,7 +77,11 @@ export async function runLocalSetup(
   signal?: AbortSignal,
   desired?: DesiredModels,
 ): Promise<void> {
-  const res = await fetch(`/api/local/setup${query(desired)}`, { signal });
+  // POST: setup downloads and installs. The server refuses a GET.
+  const body: DesiredModels = {};
+  if (desired?.chatModel) body.chatModel = desired.chatModel;
+  if (desired?.embedModel) body.embedModel = desired.embedModel;
+  const res = await localFetch("/api/local/setup", { method: "POST", body: JSON.stringify(body), signal });
   if (!res.ok || !res.body) throw new Error(`Local setup unavailable (${res.status}).`);
 
   const reader = res.body.getReader();

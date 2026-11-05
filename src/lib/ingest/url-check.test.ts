@@ -4,7 +4,10 @@
    the 2 MB text limit.
    Round 5, item 3: the renderer's own fetch() failed with "Failed to fetch"
    (CORS) on most real sites. The page now comes from the app's local server
-   (GET /api/fetch-page, server/fetchPage.mjs); `serve` stands in for it. */
+   (GET /api/fetch-page, server/fetchPage.mjs); `serve` stands in for it.
+   Round 6: `serve` answers 403 (as the server's guard does) when the call
+   has no x-nitroai-app header; "hello world" is not a link; a link to this
+   computer is refused in words. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ingest } from "./index";
 import { createNoteFromSources } from "../generation/pipeline";
@@ -20,9 +23,13 @@ function serve(body: Uint8Array | string, type: string) {
   const calls: string[] = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async (input: string) => {
+    vi.fn(async (input: string, init?: RequestInit) => {
       calls.push(String(input));
       if (!String(input).startsWith("/api/fetch-page?url=")) throw new TypeError("Failed to fetch");
+      // The guard in front of every /api/* route (server/localGuard.mjs).
+      if (new Headers(init?.headers).get("x-nitroai-app") !== "1") {
+        return new Response(JSON.stringify({ error: "forbidden", reason: "app header" }), { status: 403, headers: { "content-type": "application/json" } });
+      }
       const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body.slice();
       return new Response(bytes, { status: 200, headers: { "x-nitroai-page": "1", "x-nitroai-content-type": type, "content-type": "application/octet-stream" } });
     }),
@@ -130,6 +137,35 @@ describe("Website link — downloaded by the local server (round 5)", () => {
     await expect(ingest({ kind: "url", url: "https://no-such-site.example/" })).rejects.toThrow("(the site was not found)");
     serveError(504, { error: "timeout" });
     await expect(ingest({ kind: "url", url: "https://slow.example/" })).rejects.toThrow("(the site took too long to answer)");
+  });
+
+  it('"hello world" and other text with a space or no dot is "not a link", with 0 downloads (it became https://hello%20world/)', async () => {
+    const calls = serve(ARTICLE, "text/html");
+    for (const text of ["hello world", "  hello world  ", "notes", "photosynthesis", "en.wikipedia.org/wiki/Photo synthesis"]) {
+      await expect(ingest({ kind: "url", url: text }), text).rejects.toThrow(`"${text}" is not a link. Paste a link to a web page or a YouTube video.`);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a link to this computer is refused in words before any download; the server's 'blocked' answer is said the same way", async () => {
+    const BLOCKED = "That link points to this computer or to a private network. NitroAI reads public web pages only. Paste a link to a web page or a YouTube video.";
+    const calls = serve(ARTICLE, "text/html");
+    for (const url of ["http://localhost:41763/api/publik/status", "localhost/x", "http://app.localhost/"]) {
+      await expect(ingest({ kind: "url", url }), url).rejects.toThrow(BLOCKED);
+    }
+    expect(calls).toHaveLength(0);
+    serveError(403, { error: "blocked", reason: "the link points to this computer or a private network" });
+    await expect(ingest({ kind: "url", url: "http://169.254.169.254/latest/meta-data/" })).rejects.toThrow(BLOCKED);
+  });
+
+  it("an IPv6 or IPv4 address link still goes to the local server (which checks it)", async () => {
+    const calls = serve(ARTICLE, "text/html");
+    await ingest({ kind: "url", url: "http://[2606:4700::1111]/" });
+    await ingest({ kind: "url", url: "93.184.215.14/page" });
+    expect(calls).toEqual([
+      `/api/fetch-page?url=${encodeURIComponent("http://[2606:4700::1111]/")}`,
+      `/api/fetch-page?url=${encodeURIComponent("https://93.184.215.14/page")}`,
+    ]);
   });
 
   it("a host without the route (the web build) fetches the page itself, as before", async () => {

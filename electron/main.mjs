@@ -41,7 +41,11 @@ function binDir() {
 async function ensureServer() {
   if (serverInfo) {
     try {
-      const res = await fetch(`${serverInfo.url}/api/health`, { signal: AbortSignal.timeout(2000) });
+      // The app-only header: the server's guard refuses /api/* without it.
+      const res = await fetch(`${serverInfo.url}/api/health`, {
+        headers: { "x-nitroai-app": "1" },
+        signal: AbortSignal.timeout(2000),
+      });
       if (res.ok) return serverInfo;
     } catch {
       /* server died — fall through and restart */

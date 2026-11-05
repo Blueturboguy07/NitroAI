@@ -124,7 +124,8 @@ export function createPublikHandler(opts = {}) {
   }
 
   async function proxy(req, res, gatewayPath) {
-    const method = req.method === "GET" ? "GET" : "POST";
+    // Only GET and POST. (HEAD, PUT and the rest were sent on as POST before.)
+    const method = req.method;
     if (!ALLOWED.has(`${method} ${gatewayPath}`)) {
       return sendJson(res, 404, { error: { type: "unknown_endpoint", message: "unknown endpoint" } });
     }
@@ -206,6 +207,10 @@ export function createPublikHandler(opts = {}) {
         /* not JSON */
       }
       const type = errBody?.error?.type;
+      // A GET (GET /models) never changes state: no re-mint, no disconnect mark.
+      if (type === "key_revoked" && method === "GET") {
+        return sendJson(res, 401, errBody, passthroughHeaders(upstream));
+      }
       if (type === "key_revoked" && cred.source !== "header" && cred.source !== "env") {
         if (errBody.error.reprovision === true) {
           const r = await provision({ token, file, appVersion, baseUrl, force: true, fetchImpl });
@@ -303,10 +308,9 @@ export function createPublikHandler(opts = {}) {
         return true;
       }
       try {
+        // GET: no state change here. A revoked key is marked disconnected by
+        // the next POST through the proxy.
         const w = await wallet(c, fetchImpl);
-        if (w.status === 401 && w.body?.error?.type === "key_revoked" && c.source !== "header" && c.source !== "env") {
-          if (w.body.error.reprovision !== true) markDisconnected(file);
-        }
         sendJson(res, w.status, w.body ?? { error: { type: "bad_response", message: `wallet ${w.status}` } });
       } catch (err) {
         sendJson(res, 502, { error: { type: "gateway_unreachable", message: err instanceof Error ? err.message : "wallet failed" } });

@@ -82,13 +82,13 @@ export async function extractYoutube(url, binDir) {
   );
   const outTmpl = path.join(dir, "%(id)s.%(ext)s");
   try {
-    const titleRun = await runYtdlp(bin, ["--no-warnings", "--print", "title", url]);
+    const titleRun = await runYtdlp(bin, ["--no-warnings", "--print", "title", "--", url]);
     const title = titleRun.ok ? titleRun.stdout.trim() || null : null;
 
     // 1) captions (human + auto)
     await runYtdlp(bin, [
       "--no-warnings", "--skip-download", "--write-auto-sub", "--write-sub",
-      "--sub-langs", "en.*", "--sub-format", "vtt", "-o", outTmpl, url,
+      "--sub-langs", "en.*", "--sub-format", "vtt", "-o", outTmpl, "--", url,
     ]);
     for (const entry of fs.readdirSync(dir)) {
       if (!entry.endsWith(".vtt")) continue;
@@ -99,7 +99,7 @@ export async function extractYoutube(url, binDir) {
     }
 
     // 2) audio fallback (Whisper accepts m4a/webm/mp3/wav/ogg)
-    const audioRun = await runYtdlp(bin, ["--no-warnings", "-f", "bestaudio", "-o", outTmpl, url]);
+    const audioRun = await runYtdlp(bin, ["--no-warnings", "-f", "bestaudio", "-o", outTmpl, "--", url]);
     if (!audioRun.ok) throw new Error(`yt-dlp failed: ${audioRun.stderr.trim().slice(0, 400)}`);
     for (const entry of fs.readdirSync(dir)) {
       const ext = path.extname(entry).slice(1).toLowerCase();

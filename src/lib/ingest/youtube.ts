@@ -1,4 +1,5 @@
 import type { IngestResult } from "./index";
+import { localFetch } from "../localApi";
 
 const ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
@@ -146,7 +147,7 @@ async function ingestYoutubeDesktop(url: string): Promise<IngestResult> {
 async function ingestViaLocalServer(url: string): Promise<IngestResult | null> {
   let res: Response;
   try {
-    res = await fetch(`/api/youtube-extract?url=${encodeURIComponent(url)}`);
+    res = await localFetch("/api/youtube-extract", { method: "POST", body: JSON.stringify({ url }) });
   } catch {
     return null;
   }
