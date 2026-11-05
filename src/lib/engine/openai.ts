@@ -22,7 +22,7 @@ import type {
   TranscriptSegment,
   TtsOptions,
 } from "./types";
-import { EngineError } from "./types";
+import { EngineError, cappedToFrom, truncatedError } from "./types";
 import { unsupportedMessage, type Task } from "./router";
 import { chunkAudioForUpload, type AudioChunk, type AudioDecoder } from "../audio/chunk";
 
@@ -88,6 +88,7 @@ export class OpenAIEngine implements Engine {
       stream: true,
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...this.reasoningField(opts),
     }, opts.signal, true);
 
     if (!res.body) throw new EngineError(`${this.label()} returned an empty stream.`, "unknown");
@@ -95,6 +96,10 @@ export class OpenAIEngine implements Engine {
     const decoder = new TextDecoder();
     let buffer = "";
     let full = "";
+    /* "length" = the answer hit max_tokens. On a reasoning model the
+       thinking counts against the same cap, so the text can be cut short or
+       be empty; either way the caller must know (truncatedError). */
+    let finishReason: string | null = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -114,10 +119,15 @@ export class OpenAIEngine implements Engine {
             full += delta;
             onToken?.(delta);
           }
+          const finish: unknown = json.choices?.[0]?.finish_reason;
+          if (typeof finish === "string" && finish) finishReason = finish;
         } catch {
           /* malformed SSE chunk; skip it */
         }
       }
+    }
+    if (finishReason === "length") {
+      throw truncatedError(full, cappedToFrom(res.headers.get("x-publik-output-capped")));
     }
     return full;
   }
@@ -129,6 +139,7 @@ export class OpenAIEngine implements Engine {
       stream: false,
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...this.reasoningField(opts),
       response_format: {
         type: "json_schema",
         json_schema: { name: opts.schemaName, schema: opts.schema, strict: true },
@@ -137,10 +148,19 @@ export class OpenAIEngine implements Engine {
 
     const json = await res.json();
     const content = json.choices?.[0]?.message?.content;
+    // A cut-off JSON answer is not parseable; say what happened instead of
+    // letting "Unexpected end of JSON input" reach the screen.
+    if (json.choices?.[0]?.finish_reason === "length") {
+      throw truncatedError(typeof content === "string" ? content : "", cappedToFrom(res.headers.get("x-publik-output-capped")));
+    }
     if (typeof content !== "string") {
       throw new EngineError(`${this.label()} returned no structured content.`, "unknown");
     }
-    return JSON.parse(content) as T;
+    try {
+      return JSON.parse(content) as T;
+    } catch {
+      throw new EngineError(`${this.label()} returned an answer that is not complete JSON. Try again.`, "unknown");
+    }
   }
 
   async transcribe(audio: Blob, signal?: AbortSignal): Promise<TranscriptResult> {
@@ -268,6 +288,13 @@ export class OpenAIEngine implements Engine {
     if (!this.caps[task === "transcription" ? "transcription" : task]) {
       throw new EngineError(unsupportedMessage(task, this.provider), "unsupported");
     }
+  }
+
+  /* `reasoning_effort` goes to publik API only: its tiers are reasoning
+     models and the gateway forwards the field. OpenAI's own non-reasoning
+     models (gpt-4o, the BYO default) answer 400 to it. */
+  private reasoningField(opts: CompletionOptions): Record<string, string> {
+    return this.provider === "publik" && opts.reasoningEffort ? { reasoning_effort: opts.reasoningEffort } : {};
   }
 
   private resolveModel(tier?: "fast" | "strong"): string {

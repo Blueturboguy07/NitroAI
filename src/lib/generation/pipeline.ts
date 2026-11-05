@@ -118,7 +118,14 @@ export async function createNoteFromSources(
   let blocks: Note["blocks"] = [];
   if (!isBlank) {
     await emit({ stage: "notes", message: "Writing your notes…", progress: 0.75 });
-    blocks = await generateNoteBody(engine, combined, language);
+    try {
+      blocks = await generateNoteBody(engine, combined, language);
+    } catch (err) {
+      // The job says why no note was saved instead of spinning until relaunch.
+      const message = err instanceof Error ? err.message : "Could not write the notes.";
+      await emit({ status: "error", message, error: message });
+      throw err;
+    }
   }
 
   // 3. Title.

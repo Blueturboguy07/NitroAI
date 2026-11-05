@@ -18,6 +18,7 @@ import {
   generateTitle,
 } from "./index";
 import { createNoteFromSources } from "./pipeline";
+import { titleSystem } from "../prompts";
 
 /* A deterministic in-memory engine: no network. Returns canned output keyed by
    the structured schemaName, and a fixed markdown doc for completions. */
@@ -30,8 +31,9 @@ class FakeEngine implements Engine {
   }
   async complete(opts: CompletionOptions, onToken?: TokenHandler): Promise<string> {
     this.completeCalls++;
-    // A tiny title vs note heuristic: short maxTokens => title.
-    if ((opts.maxTokens ?? 999) <= 40) {
+    // Title vs note: the title prompt (its cap is no longer tiny — a
+    // reasoning model needs room to think before a 6-word title).
+    if (opts.system === titleSystem) {
       onToken?.("Photosynthesis Basics");
       return "Photosynthesis Basics";
     }

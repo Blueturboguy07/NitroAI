@@ -15,7 +15,13 @@ export interface CompletionOptions {
   /* Task hint lets the router pick a cheap vs strong model tier. */
   tier?: "fast" | "strong";
   temperature?: number;
+  /* The output cap. On a reasoning model it covers the model's thinking AND
+     the answer, so it must leave room for both (see generation/index.ts). */
   maxTokens?: number;
+  /* How hard a reasoning model thinks before it answers. Sent as
+     `reasoning_effort` on the publik path only (publik's tiers are reasoning
+     models and default to "medium" on balanced); other providers ignore it. */
+  reasoningEffort?: "low" | "medium" | "high";
   signal?: AbortSignal;
 }
 
@@ -91,6 +97,14 @@ export interface EngineErrorDetail {
   /* publik API 401 key_revoked with reprovision:false — the install was
      removed from the user's account; the app must not re-mint on its own. */
   disconnected?: boolean;
+  /* kind "truncated": the answer stopped at the output cap (OpenAI
+     finish_reason "length", Anthropic stop_reason "max_tokens", Ollama
+     done_reason "length"). `partialText` is what did arrive — "" when a
+     reasoning model spent the whole cap thinking. */
+  partialText?: string;
+  /* publik API lowered the cap to fit the balance (x-publik-output-capped
+     "<served>/<asked>"): the cap that was actually served. */
+  cappedTo?: number;
 }
 
 /* Raised by engines for user-actionable failures (bad key, quota, model
@@ -107,10 +121,34 @@ export class EngineError extends Error {
       | "unsupported"
       /* publik API: out of credit or over a spend cap. Never retried. */
       | "credit"
+      /* The answer hit the output cap before it was finished (detail.partialText). */
+      | "truncated"
       | "unknown" = "unknown",
     readonly detail: EngineErrorDetail = {},
   ) {
     super(message);
     this.name = "EngineError";
   }
+}
+
+/* The one error every engine raises when an answer hits the output cap.
+   A reasoning model (publik's tiers) counts its thinking against the same
+   cap, so "nothing came back" is a real outcome, not a corner case: on
+   2026-09-30 two NitroAI note sections spent all 4,000 of their tokens on
+   reasoning and the app saved an empty note. Callers decide what to do with
+   the partial text; this message is for the ones that just show it. */
+export function truncatedError(partialText: string, cappedTo?: number): EngineError {
+  const capped = cappedTo
+    ? " publik API lowered the length limit of this request to fit your balance; adding a plan or pack gives it the full limit."
+    : "";
+  const message = partialText.trim()
+    ? `The answer stopped at the AI's length limit before it was finished.${capped}`
+    : `The AI used its whole length limit on thinking and wrote no answer.${capped}`;
+  return new EngineError(message, "truncated", { partialText, ...(cappedTo ? { cappedTo } : {}) });
+}
+
+/* x-publik-output-capped: "<served>/<asked>" — the cap publik actually served. */
+export function cappedToFrom(header: string | null | undefined): number | undefined {
+  const m = /^(\d+)\/(\d+)$/.exec((header ?? "").trim());
+  return m ? Number(m[1]) : undefined;
 }

@@ -16,7 +16,7 @@ import type {
   TranscriptResult,
   TtsOptions,
 } from "./types";
-import { EngineError } from "./types";
+import { EngineError, truncatedError } from "./types";
 
 const DEFAULT_BASE_URL = "http://localhost:11434";
 /* qwen2.5:3b — a ~1.9 GB download that runs on modest laptops and is
@@ -53,6 +53,7 @@ export class LocalEngine implements Engine {
     const decoder = new TextDecoder();
     let buffer = "";
     let full = "";
+    let doneReason: string | null = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -70,11 +71,14 @@ export class LocalEngine implements Engine {
             full += delta;
             onToken?.(delta);
           }
+          if (json.done === true && typeof json.done_reason === "string") doneReason = json.done_reason;
         } catch {
           /* malformed line; skip it */
         }
       }
     }
+    // num_predict reached (Ollama's finish_reason "length").
+    if (doneReason === "length") throw truncatedError(full);
     return full;
   }
 
