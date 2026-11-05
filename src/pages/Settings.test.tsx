@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-/* Settings with publik API: the user's own key is never overwritten or
-   forgotten by any publik path; the balance line comes from GET /wallet. */
+/* Settings with publik API: publik leads the AI Engine card with ONE primary
+   button, Local and the user's own key sit below in a closed section
+   (founder 2026-11-02 "publik api should be front and center"); the user's
+   own key is never overwritten or forgotten by any publik path; the balance
+   line comes from GET /wallet. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
@@ -42,29 +45,44 @@ async function renderSettings() {
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
+  // jsdom has no window.open; a fresh mint opens the claim page.
+  vi.stubGlobal("open", vi.fn());
 });
+
+/* The AI Engine card and the buttons drawn in it as the primary action. */
+const engineCard = () => screen.getByRole("heading", { name: "AI Engine" }).closest(".rounded-card") as HTMLElement;
+const primaryButtons = (root: HTMLElement) =>
+  Array.from(root.querySelectorAll("button")).filter((b) => b.className.split(/\s+/).includes("bg-accent"));
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
 
 describe("Settings — publik API", () => {
-  it("switching the pill to publik and back leaves the user's key exactly as it was; Remove key never touches publik", async () => {
+  it("publik leads the AI Engine card with ONE primary button; the user's key sits below, closed and untouched; Remove key never touches publik", async () => {
     localStorage.setItem("nitroai.apikey", "sk-user-key");
     localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "cloud", onboarded: true, language: "English" }));
     const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" });
     await renderSettings();
     const user = userEvent.setup();
 
+    expect(await screen.findByRole("heading", { name: "NitroAI uses publik API" })).toBeInTheDocument();
+    const card = engineCard();
+    expect(card).toHaveTextContent("NitroAI runs on publik API: no key of your own needed.");
+    expect(primaryButtons(card)).toEqual([screen.getByRole("button", { name: "Continue with publik API" })]);
+    // No pill of three, no own-key link next to Continue, no key field until opened.
+    expect(screen.queryByRole("button", { name: "publik API" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Use my own key instead" })).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/pk_… \(publik API\)/)).not.toBeInTheDocument();
+    const others = screen.getByRole("button", { name: "Other ways to run NitroAI: your own key, or fully local" });
+    expect(others).toHaveAttribute("aria-expanded", "false");
+    expect(card).toHaveTextContent("Now running on your own key.");
+    expect(card.textContent!.indexOf("NitroAI uses publik API")).toBeLessThan(card.textContent!.indexOf("Other ways to run NitroAI"));
+
+    await user.click(others);
+    expect(others).toHaveAttribute("aria-expanded", "true");
     const input = (await screen.findByPlaceholderText(/pk_… \(publik API\)/)) as HTMLInputElement;
     await waitFor(() => expect(input.value).toBe("sk-user-key"));
-
-    await user.click(await screen.findByRole("button", { name: "publik API" }));
-    expect(await screen.findByRole("heading", { name: "NitroAI uses publik API" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Use my own key instead" }));
-
-    const again = (await screen.findByPlaceholderText(/pk_… \(publik API\)/)) as HTMLInputElement;
-    expect(again.value).toBe("sk-user-key");
     expect(localStorage.getItem("nitroai.apikey")).toBe("sk-user-key");
     expect(JSON.parse(localStorage.getItem("nitroai.prefs")!).mode).toBe("cloud");
 
@@ -72,6 +90,44 @@ describe("Settings — publik API", () => {
     await waitFor(() => expect(localStorage.getItem("nitroai.apikey")).toBeNull());
     expect(calls).not.toContain("/api/publik/forget");
     expect(calls).not.toContain("/api/publik/disconnect");
+    expect(calls).not.toContain("/api/publik/provision");
+  });
+
+  it("one press in Settings: Continue mints, opens the claim page and switches to publik; the user's key stays", async () => {
+    localStorage.setItem("nitroai.apikey", "sk-user-key");
+    localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "cloud", onboarded: true, language: "English" }));
+    const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 0 });
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    await renderSettings();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
+    await screen.findByTestId("publik-welcome-card");
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith("https://publikhq.com/claim/HK7F-2QWD", "_blank", "noopener");
+    expect(screen.getByTestId("publik-link-opened")).toBeInTheDocument();
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs")!)).toMatchObject({ mode: "publik", publikDisclosureAck: 2 }));
+    expect(calls.filter((c) => c === "/api/publik/provision")).toHaveLength(1);
+    expect(localStorage.getItem("nitroai.apikey")).toBe("sk-user-key");
+  });
+
+  it("a ready publik credential while on Local shows ONE primary 'Use publik API'; it switches back without a new mint", async () => {
+    localStorage.setItem("nitroai.prefs", JSON.stringify({ mode: "local", onboarded: true, language: "English", publikDisclosureAck: 2 }));
+    const calls = stubServer(
+      { available: true, state: "ready", baseUrl: "/api/publik/v1", claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 0 },
+      { balance_micros: 1_850_000, claim_state: "claimed" },
+    );
+    await renderSettings();
+    const user = userEvent.setup();
+    const use = within(await screen.findByTestId("publik-use-card")).getByRole("button", { name: "Use publik API" });
+    expect(primaryButtons(engineCard())).toEqual([use]);
+    expect(engineCard()).toHaveTextContent("Now running locally on this computer.");
+    expect(screen.queryByTestId("publik-balance-line")).not.toBeInTheDocument();
+
+    await user.click(use);
+    await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs")!)).toMatchObject({ mode: "publik", publikDisclosureAck: 2 }));
+    await waitFor(() => expect(screen.getByTestId("publik-balance-line")).toHaveTextContent("$1.85 left"));
+    expect(screen.queryByTestId("publik-use-card")).not.toBeInTheDocument();
     expect(calls).not.toContain("/api/publik/provision");
   });
 

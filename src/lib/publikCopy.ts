@@ -48,6 +48,9 @@ export const cta = {
   /* Under "Later" while this computer is unlinked at $0.00. */
   laterHintUnlinked:
     "At $0.00, publik API can't answer requests. Link this computer, add a plan or pack, or use your own key. You can do this any time in Settings.",
+  /* After the one press: the claim page is already open in the browser. */
+  linkOpenedLine: "publikhq.com is open in your browser. Press \"Link this computer\" there. NitroAI goes on by itself when this computer is linked.",
+  linkAgainLabel: "Open the link page again",
   pickPlanLabel: "Pick a plan",
   managePlanLabel: "Manage plan",
   whyLabel: "Why it costs money",
@@ -75,14 +78,19 @@ export const disclosure = {
   termsLink: "publik API terms",
 };
 
-export const onboardingCard = {
-  title: "publik API",
-  badge: "Recommended",
-  body:
-    `Notes, flashcards, quizzes and chat run on publik's metered API — pay only for what you use, priced per use at 50% of the model's published list price. Most people spend under $2 a month. No key needed: link your publik account for ${LINK_FREE_USE} of free use, once.`,
+/* publik first (founder, 2026-11-02): every other way to run the app sits
+   below publik, in one section that starts closed. */
+export const otherWays = {
+  label: "Other ways to run NitroAI: your own key, or fully local",
+  nowOwnKey: "Now running on your own key.",
+  nowLocal: "Now running locally on this computer.",
+  pickOne: "Pick one to switch away from publik API.",
 };
 
 export const settings = {
+  engineIntro: "NitroAI runs on publik API: no key of your own needed. You pay per use from your publik balance.",
+  readyTitle: "publik API is set up on this computer",
+  useLabel: "Use publik API",
   rate: "Every request is priced per use at 50% of the model's published list price. Most people spend under $2 a month.",
   atCost: "Audio transcription, podcast voices and embeddings are passed through at cost.",
   data: "Your prompts go through publik's servers to a shared model account. publik does not keep your prompts after the reply and never trains on them.",

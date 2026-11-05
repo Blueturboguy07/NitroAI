@@ -37,6 +37,7 @@ export default function PublikSettings({
   onActivated,
   onOwnKey,
   onLeft,
+  active = true,
 }: {
   engine: Engine | null;
   /* prefs.publikDisclosureAck — below DISCLOSURE_VERSION means "show the
@@ -44,9 +45,14 @@ export default function PublikSettings({
   disclosureAck: number;
   /* The credential is ready and the disclosure was accepted → prefs.mode = "publik". */
   onActivated: () => void;
-  onOwnKey: () => void;
+  /* Inline "Use my own key instead" links. Settings leaves it out: its own-key
+     and local options sit below this panel, closed (publik first). */
+  onOwnKey?: () => void;
   /* Disconnected / forgotten → prefs.mode = null. */
   onLeft: () => void;
+  /* publik is the engine in use. False when the user is on their own key or
+     Local: a ready credential then shows ONE primary "Use publik API". */
+  active?: boolean;
 }) {
   const [status, setStatus] = useState<PublikStatus | null>(null);
   const [balance, setBalanceState] = useState<PublikBalance>(getBalance());
@@ -56,6 +62,8 @@ export default function PublikSettings({
   /* Set right after a successful mint from this panel: the first-run card
      (contract §12.1) shows until "Later" or the plan link. */
   const [justMinted, setJustMinted] = useState<PublikStatus | null>(null);
+  /* One press connects and links: a fresh mint opens the claim page at once. */
+  const [linkOpened, setLinkOpened] = useState(false);
   const [whyOpen, setWhyOpen] = useState(false);
 
   async function refresh() {
@@ -80,6 +88,11 @@ export default function PublikSettings({
     if (r.ok && r.state === "ready") {
       setStatus(r);
       setJustMinted(r);
+      const claimUrl = publikUrl(r.claimUrl);
+      if (r.minted && claimUrl) {
+        openExternal(claimUrl);
+        setLinkOpened(true);
+      }
       onActivated();
       void fetchPublikWallet().then((w) => setUnreachable(w === null));
       return;
@@ -103,9 +116,11 @@ export default function PublikSettings({
           <button onClick={continueWithPublik} disabled={busy} className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60">
             {busy ? "Reconnecting…" : copy.reconnectLabel}
           </button>
-          <button onClick={onOwnKey} className="text-sm font-semibold text-ink-dim hover:text-ink">
-            {copy.ownKeyLabel}
-          </button>
+          {onOwnKey && (
+            <button onClick={onOwnKey} className="text-sm font-semibold text-ink-dim hover:text-ink">
+              {copy.ownKeyLabel}
+            </button>
+          )}
         </div>
       </div>
     );
@@ -114,7 +129,7 @@ export default function PublikSettings({
   if (justMinted) {
     return (
       <div className="mt-5">
-        <PublikWelcomeCard status={justMinted} onLink={() => setJustMinted(null)} onLater={() => setJustMinted(null)} />
+        <PublikWelcomeCard status={justMinted} opened={linkOpened} onLink={() => setJustMinted(null)} onLater={() => setJustMinted(null)} />
       </div>
     );
   }
@@ -123,6 +138,25 @@ export default function PublikSettings({
     return (
       <div className="mt-5">
         <PublikDisclosure busy={busy} error={error} onContinue={continueWithPublik} onOwnKey={onOwnKey} />
+      </div>
+    );
+  }
+
+  if (!active) {
+    return (
+      <div className="mt-5 rounded-card border-2 border-accent bg-card p-5 shadow-soft" data-testid="publik-use-card">
+        <p className="flex items-center gap-2 font-display text-lg font-bold">
+          <Zap className="size-5 text-accent" />
+          {copy.readyTitle}
+        </p>
+        <p className="mt-1 text-sm text-ink-dim">{copy.rate}</p>
+        <button
+          type="button"
+          onClick={onActivated}
+          className="mt-4 rounded-xl bg-accent px-5 py-2.5 font-display font-bold text-white hover:bg-accent-hover"
+        >
+          {copy.useLabel}
+        </button>
       </div>
     );
   }
@@ -216,9 +250,11 @@ export default function PublikSettings({
         <button onClick={() => openExternal(PUBLIK_PRICING_URL)} className="text-sm font-semibold text-ink-dim hover:text-ink">
           {copy.pricingLabel}
         </button>
-        <button onClick={onOwnKey} className="text-sm font-semibold text-ink-dim hover:text-ink">
-          {copy.ownKeyLabel}
-        </button>
+        {onOwnKey && (
+          <button onClick={onOwnKey} className="text-sm font-semibold text-ink-dim hover:text-ink">
+            {copy.ownKeyLabel}
+          </button>
+        )}
         {unreachable && (
           <button onClick={() => void refresh()} className="text-sm font-semibold text-ink-dim hover:text-ink">
             {copy.retryLabel}
