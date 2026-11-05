@@ -156,6 +156,20 @@ describe("createNoteFromSources pipeline", () => {
     expect(note!.blocks.length).toBeGreaterThan(0);
   });
 
+  it("a .txt upload (kind text + File, as CreateNoteModal sends it) becomes a note", async () => {
+    const repo = new Repo(memoryStore());
+    const engine = new FakeEngine();
+    const file = new File(["Lecture 7: The Calvin Cycle\n\nRuBisCO fixes CO2 onto RuBP."], "lecture-7.txt");
+    const id = await createNoteFromSources({
+      repo,
+      engine,
+      inputs: [{ kind: "text", file, filename: "lecture-7.txt" }],
+    });
+    const note = await repo.getNote(id);
+    expect(note!.sourceText).toBe("Lecture 7: The Calvin Cycle\n\nRuBisCO fixes CO2 onto RuBP.");
+    expect(note!.blocks.length).toBeGreaterThan(0);
+  });
+
   it("transcribes an audio source before writing notes", async () => {
     const repo = new Repo(memoryStore());
     const engine = new FakeEngine();

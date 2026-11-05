@@ -25,7 +25,8 @@ async function fileToAttachment(file: File): Promise<Attachment> {
     return { name: file.name, text: (await ingest({ kind: "docx", file, filename: file.name })).text };
   }
   if (["txt", "md", "markdown", "text"].includes(ext) || file.type.startsWith("text/")) {
-    return { name: file.name, text: await file.text() };
+    // Same reader as a .txt / .md note upload (BOM, UTF-16 and Windows-1252 aware).
+    return { name: file.name, text: (await ingest({ kind: "text", file, filename: file.name })).text };
   }
   throw new Error(`Can't read "${file.name}". Attach a PDF, DOCX, TXT, or Markdown file.`);
 }

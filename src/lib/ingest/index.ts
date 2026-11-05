@@ -2,7 +2,7 @@
    that note generation can use as grounding context. */
 
 import type { SourceKind } from "../types";
-import { ingestText } from "./text";
+import { ingestText, ingestTextFile } from "./text";
 import { ingestUrl } from "./url";
 import { ingestYoutube } from "./youtube";
 import { ingestPdf } from "./pdf";
@@ -51,8 +51,14 @@ export async function ingest(input: IngestInput): Promise<IngestResult> {
     case "blank":
       return { text: "" };
 
-    case "text":
+    case "text": {
+      // A .txt / .md upload arrives as kind "text" with the File, not the text.
+      if (input.text === undefined && input.file) {
+        const result = await ingestTextFile(input.file);
+        return withFilenameFallback(result, input.filename);
+      }
       return ingestText(input.text ?? "");
+    }
 
     case "url": {
       if (!input.url) throw new Error("A URL is required to ingest a web page.");
