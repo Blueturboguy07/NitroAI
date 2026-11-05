@@ -33,6 +33,7 @@ vi.mock("./ollama.mjs", () => ({
   shutdown: () => {},
 }));
 vi.mock("./ytdlp.mjs", () => ({
+  cleanOldYtdlp: () => [],
   extractYoutube: async (url) => {
     calls.extract.push(url);
     return { transcript: "captions", audioBase64: null, audioExt: null, title: "Video" };

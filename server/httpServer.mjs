@@ -20,7 +20,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { extractYoutube } from "./ytdlp.mjs";
+import { cleanOldYtdlp, extractYoutube } from "./ytdlp.mjs";
 import { provision, status } from "./ollama.mjs";
 import { createPublikHandler } from "./publikProxy.mjs";
 import { handleFetchPage } from "./fetchPage.mjs";
@@ -203,6 +203,9 @@ export function startServer({ distDir, binDir, port = 0, ports, host = "127.0.0.
   const resolvedDist = distDir ?? path.join(__dirname, "..", "dist");
   const candidates = Array.isArray(ports) && ports.length ? ports : [port];
   const handlePublik = createPublikHandler(publik);
+  // Startup: the old unversioned bin/yt-dlp (v0.2.1, v0.2.2) is never run.
+  // Delete it now (see ytdlp.mjs).
+  if (binDir) cleanOldYtdlp(binDir);
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${host}`);
