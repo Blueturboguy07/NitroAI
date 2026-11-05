@@ -5,17 +5,17 @@ import { describe, expect, it } from "vitest";
 import { MAX_TEXT_FILE_BYTES, UNSUPPORTED_FILE_MESSAGE, documentFileProblem, documentKind, looksBinary } from "./fileTypes";
 
 const EXACT =
-  "NitroAI reads PDF, Word (.docx, .doc), .txt and .md files. For slides, save them as PDF and upload that.";
+  "NitroAI reads PDF, Word (.docx), .txt and .md files. For slides, save them as PDF and upload that.";
 
 describe("fileTypes", () => {
   it("the message names the types that work, word for word", () => {
     expect(UNSUPPORTED_FILE_MESSAGE).toBe(EXACT);
   });
 
-  it("only .pdf, .docx/.doc, .txt and .md have a kind", () => {
+  it("only .pdf, .docx, .txt and .md have a kind (.doc is refused)", () => {
     expect(documentKind("a.pdf")).toBe("pdf");
     expect(documentKind("a.DOCX")).toBe("docx");
-    expect(documentKind("a.doc")).toBe("docx");
+    expect(documentKind("a.doc")).toBeNull();
     expect(documentKind("a.txt")).toBe("text");
     expect(documentKind("Notes.MD")).toBe("text");
     expect(documentKind("C:\\Users\\m\\week.3.notes.md")).toBe("text");
@@ -37,7 +37,7 @@ describe("fileTypes", () => {
     const zip = new Uint8Array(1024);
     zip.set([0x50, 0x4b, 0x03, 0x04]);
     expect(await documentFileProblem(new File([zip], "deck.pptx"))).toBe(`NitroAI can't read "deck.pptx". ${EXACT}`);
-    expect(await documentFileProblem(new File([zip], "deck.txt"))).toMatch(/^"deck.txt" is not plain text/);
+    expect(await documentFileProblem(new File([zip], "deck.txt"))).toMatch(/^"deck.txt" is a zip file, not a text file/);
     expect(await documentFileProblem(new File([new Uint8Array(MAX_TEXT_FILE_BYTES + 10).fill(0x61)], "big.md"))).toMatch(/up to 2 MB/);
     expect(await documentFileProblem(new File(["# ok"], "ok.md"))).toBeNull();
     expect(await documentFileProblem(new File(["%PDF-1.7"], "a.pdf"))).toBeNull();

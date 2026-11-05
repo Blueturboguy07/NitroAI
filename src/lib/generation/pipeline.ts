@@ -9,6 +9,7 @@ import type { Repo } from "../db";
 import type { Job, JobFile, Note, SourceKind } from "../types";
 import { uuid, now } from "../ids";
 import { ingest, type IngestInput } from "../ingest";
+import { cutTitle } from "../ingest/text";
 import { generateNoteBody, generateTitle } from "./index";
 
 export type ProgressCb = (job: Job) => void;
@@ -95,7 +96,7 @@ export async function createNoteFromSources(
       texts.push(text);
       if (res.meta) metas.push(res.meta);
       const named = res.title?.trim() || (inputs[i].filename ? stripExtension(inputs[i].filename!) : "");
-      if (named) sourceTitles.push(named.slice(0, 80).trim());
+      if (named) sourceTitles.push(cutTitle(named));
       file.status = "done";
       anyOk = true;
     } catch (err) {
@@ -191,7 +192,7 @@ function stripExtension(name: string): string {
 function firstHeading(blocks: Note["blocks"]): string {
   for (const type of ["heading1", "heading2", "heading3"] as const) {
     const b = blocks.find((x) => x.type === type && x.text?.trim());
-    if (b) return b.text.replace(/\*\*|__/g, "").trim().slice(0, 80);
+    if (b) return cutTitle(b.text.replace(/\*\*|__/g, ""));
   }
   return "";
 }

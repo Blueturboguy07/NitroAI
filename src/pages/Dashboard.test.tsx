@@ -92,7 +92,7 @@ describe("Dashboard — Document upload card", () => {
       </MemoryRouter>,
     );
     const card = (await screen.findByText("Document upload")).closest("button")!;
-    expect(card).toHaveTextContent("PDF, Word, .txt or .md");
-    expect(card).not.toHaveTextContent(/PPT|etc/);
+    expect(card).toHaveTextContent("PDF, Word (.docx), .txt or .md");
+    expect(card).not.toHaveTextContent(/PPT|etc|\.doc\b|DOC\b/);
   });
 });

@@ -11,7 +11,7 @@ import { memoryStore } from "../db/memory";
 import type { Engine } from "../engine/types";
 
 const EXACT =
-  "NitroAI reads PDF, Word (.docx, .doc), .txt and .md files. For slides, save them as PDF and upload that.";
+  "NitroAI reads PDF, Word (.docx), .txt and .md files. For slides, save them as PDF and upload that.";
 const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024;
 
 /* A .pptx is a zip: "PK\x03\x04", then binary data with NUL bytes. */
@@ -19,7 +19,13 @@ function fakePptx(size = 120 * 1024): Uint8Array {
   const b = new Uint8Array(size);
   b.set([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x06, 0x00]);
   for (let i = 8; i < size; i++) b[i] = (i * 31) % 256;
-  b.set(new TextEncoder().encode("[Content_Types].xml ppt/slides/slide1.xml"), 30);
+  // A local file header whose part name is ppt/slides/slide1.xml (name length at +26).
+  const name = new TextEncoder().encode("ppt/slides/slide1.xml");
+  b[26] = name.length;
+  b[27] = 0;
+  b[28] = 0;
+  b[29] = 0;
+  b.set(name, 30);
   return b;
 }
 
@@ -68,8 +74,13 @@ describe("D1 — which uploads are read", () => {
   });
 
   it("a .txt with binary data (a NUL byte in the first 8 KB) is refused", async () => {
-    await expect(upload([fakePptx()], "renamed-deck.txt")).rejects.toThrow(/not plain text/);
-    await expect(upload([fakePptx()], "renamed-deck.txt")).rejects.toThrow(EXACT);
+    // A NUL byte with no known signature: binary data.
+    const nul = new Uint8Array(4000).fill(0x61);
+    nul[100] = 0;
+    await expect(upload([nul], "renamed-deck.txt")).rejects.toThrow(/not plain text/);
+    await expect(upload([nul], "renamed-deck.txt")).rejects.toThrow(EXACT);
+    // The real .pptx bytes are named for what they are.
+    await expect(upload([fakePptx()], "renamed-deck.txt")).rejects.toThrow(/"renamed-deck.txt" is a PowerPoint file, not a text file/);
   });
 
   it("a NUL byte after the first 8 KB does not count", async () => {
@@ -88,7 +99,7 @@ describe("D1 — which uploads are read", () => {
 
   it("a .txt over 2 MB is refused with a message in words", async () => {
     const big = new Uint8Array(MAX_TEXT_FILE_BYTES + 1).fill(0x61);
-    await expect(upload([big], "huge.txt")).rejects.toThrow(/huge\.txt" is 2\.0 MB\. NitroAI reads \.txt and \.md files up to 2 MB/);
+    await expect(upload([big], "huge.txt")).rejects.toThrow(/huge\.txt" is 2\.01 MB\. NitroAI reads \.txt and \.md files up to 2 MB/);
   });
 
   it("a .txt of exactly 2 MB is read", async () => {

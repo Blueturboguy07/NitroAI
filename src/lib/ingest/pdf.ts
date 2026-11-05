@@ -1,15 +1,10 @@
 import type { IngestResult } from "./index";
+import { titleFromFilename } from "./text";
 
 function fileName(file: File | Blob): string | undefined {
   return typeof File !== "undefined" && file instanceof File ? file.name : undefined;
 }
 
-function titleFromFilename(name: string): string {
-  return name
-    .replace(/\.[^./\\]+$/, "")
-    .trim()
-    .slice(0, 80);
-}
 
 /* Extract text from every page of a PDF via pdfjs-dist. Browser-only — the
    library relies on DOM globals (DOMMatrix, etc.) that don't exist under
@@ -53,7 +48,12 @@ export async function ingestPdf(file: File | Blob): Promise<IngestResult> {
       meta: { filename: name, pages: pages.length },
     };
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Couldn't extract text from that PDF (${reason}).`);
+    // The library's own words ("Invalid PDF structure") never reach the user.
+    console.warn("NitroAI: PDF reader failed", err);
+    const what = fileName(file) ? `"${fileName(file)}"` : "that PDF";
+    if (err instanceof Error && err.name === "PasswordException") {
+      throw new Error(`${what} is protected with a password. Remove the password, then upload it again.`);
+    }
+    throw new Error(`NitroAI couldn't read the text in ${what}. The file may be damaged. Open it and save it as PDF again, then upload that.`);
   }
 }

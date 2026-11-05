@@ -242,7 +242,7 @@ describe("the note title when the title call fails or is cut", () => {
 
   it("title call cut, source with no name: the note's first heading", async () => {
     const repo = new Repo(memoryStore());
-    const id = await createNoteFromSources({ repo, engine: new TitleFailEngine("cut"), inputs: [{ kind: "text", text: "   " }, { kind: "audio", file: new Blob(["x"]) }] });
+    const id = await createNoteFromSources({ repo, engine: new TitleFailEngine("cut"), inputs: [{ kind: "text", text: "   " }, { kind: "audio", file: new Blob([new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20])], { type: "audio/wav" }) }] });
     const title = (await repo.getNote(id))!.title;
     expect(title).toBe("Carbon Fixation in Plants");
   });

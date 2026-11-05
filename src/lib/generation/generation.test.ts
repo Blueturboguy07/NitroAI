@@ -176,7 +176,7 @@ describe("createNoteFromSources pipeline", () => {
     const id = await createNoteFromSources({
       repo,
       engine,
-      inputs: [{ kind: "audio", file: new Blob(["x"]), filename: "lecture.mp3" }],
+      inputs: [{ kind: "audio", file: new Blob([new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20])], { type: "audio/wav" }), filename: "lecture.wav" }],
     });
     const note = await repo.getNote(id);
     expect(note!.sourceText).toContain("transcript");

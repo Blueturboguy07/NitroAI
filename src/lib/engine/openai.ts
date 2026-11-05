@@ -23,6 +23,7 @@ import type {
   TtsOptions,
 } from "./types";
 import { EngineError, cappedToFrom, truncatedError } from "./types";
+import { UNREADABLE_AUDIO_MESSAGE } from "../ingest/fileTypes";
 import { unsupportedMessage, type Task } from "./router";
 import { chunkAudioForUpload, type AudioChunk, type AudioDecoder } from "../audio/chunk";
 
@@ -176,10 +177,17 @@ export class OpenAIEngine implements Engine {
     /* publik API sits behind a 4 MB request cap: chunk client-side. The BYO
        path keeps sending the file whole (OpenAI's own limit is 25 MB and the
        pipeline already guards at 24 MB). */
-    const chunks: AudioChunk[] =
-      this.provider === "publik"
-        ? await chunkAudioForUpload(audio, this.audioDecoder ? { decode: this.audioDecoder } : {})
-        : [{ blob: audio, filename: "audio.webm", offsetSeconds: 0 }];
+    let chunks: AudioChunk[];
+    try {
+      chunks =
+        this.provider === "publik"
+          ? await chunkAudioForUpload(audio, this.audioDecoder ? { decode: this.audioDecoder } : {})
+          : [{ blob: audio, filename: "audio.webm", offsetSeconds: 0 }];
+    } catch (err) {
+      // WebAudio's "Unable to decode audio data" never reaches the user.
+      console.warn("NitroAI: audio decode failed", err);
+      throw new EngineError(UNREADABLE_AUDIO_MESSAGE, "unsupported");
+    }
 
     const texts: string[] = [];
     const segments: TranscriptSegment[] = [];
@@ -201,7 +209,15 @@ export class OpenAIEngine implements Engine {
       } catch (err) {
         throw toNetworkError(err);
       }
-      if (!res.ok) throw await this.mapError(res);
+      if (!res.ok) {
+        const err = await this.mapError(res);
+        /* The provider's "Invalid file format. Supported formats: [...]" (or
+           "could not be decoded") becomes words. */
+        if ((res.status === 400 || res.status === 415) && /file format|supported formats|decod|unsupported|corrupt|not a valid/i.test(err.message)) {
+          throw new EngineError(UNREADABLE_AUDIO_MESSAGE, "unsupported");
+        }
+        throw err;
+      }
       this.readUsage(res, false);
 
       const json = await res.json();

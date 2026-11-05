@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { AlertCircle, FileAudio, FileText, Info, Link2, Upload, X } from "lucide-react";
 import type { IngestInput } from "../lib/ingest";
-import { DOCUMENT_ACCEPT, documentFileProblem, documentKind } from "../lib/ingest/fileTypes";
+import { DOCUMENT_ACCEPT, audioBlobProblem, documentFileProblem, documentKind } from "../lib/ingest/fileTypes";
 import { isYoutube } from "../lib/ingest/youtube";
 import type { Engine } from "../lib/engine/types";
 import { supportsTask } from "../lib/engine/router";
@@ -41,10 +41,9 @@ export default function CreateNoteModal({
   const ready = source === "link" ? url.trim().length > 0 : files.length > 0;
   const canTranscribe = !engine || supportsTask(engine, "transcription");
 
-  async function addDocuments(added: File[]) {
-    const checked = await Promise.all(
-      added.map(async (file) => ({ file, problem: await documentFileProblem(file) })),
-    );
+  async function addFiles(added: File[]) {
+    const check = source === "audio" ? (f: File) => audioBlobProblem(f, f.name) : documentFileProblem;
+    const checked = await Promise.all(added.map(async (file) => ({ file, problem: await check(file) })));
     const ok = checked.filter((c) => !c.problem).map((c) => c.file);
     setRefused(checked.flatMap((c) => (c.problem ? [c.problem] : [])));
     if (ok.length) setFiles((prev) => [...prev, ...ok]);
@@ -107,24 +106,12 @@ export default function CreateNoteModal({
         {source === "document" && (
           <>
             <Dropzone
-              label="Drag documents here, or click to upload (PDF, Word, .txt, .md)"
+              label="Drag documents here, or click to upload (PDF, Word .docx, .txt, .md)"
               accept={DOCUMENT_ACCEPT}
-              onAdd={(added) => void addDocuments(added)}
+              onAdd={(added) => void addFiles(added)}
               files={files}
             />
-            {refused.length > 0 && (
-              <div
-                role="alert"
-                className="mt-3 flex items-start gap-2 rounded-xl border border-danger-ink/30 bg-danger-soft px-3.5 py-3 text-xs font-semibold text-danger-ink"
-              >
-                <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
-                <span className="flex flex-col gap-1">
-                  {refused.map((m, i) => (
-                    <span key={i}>{m}</span>
-                  ))}
-                </span>
-              </div>
-            )}
+            <Refused messages={refused} />
           </>
         )}
 
@@ -153,9 +140,10 @@ export default function CreateNoteModal({
             <Dropzone
               label="Drag an audio file here, or click to upload (MP3, WAV, M4A, etc.)"
               accept="audio/*,video/*"
-              onAdd={(added) => setFiles((prev) => [...prev, ...added])}
+              onAdd={(added) => void addFiles(added)}
               files={files}
             />
+            <Refused messages={refused} />
           </>
         )}
 
@@ -171,6 +159,24 @@ export default function CreateNoteModal({
           {busy ? "Generating…" : "Generate Notes"}
         </button>
       </div>
+    </div>
+  );
+}
+
+/* Why a picked or dropped file was not added, in words, before any call. */
+function Refused({ messages }: { messages: string[] }) {
+  if (!messages.length) return null;
+  return (
+    <div
+      role="alert"
+      className="mt-3 flex items-start gap-2 rounded-xl border border-danger-ink/30 bg-danger-soft px-3.5 py-3 text-xs font-semibold text-danger-ink"
+    >
+      <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+      <span className="flex flex-col gap-1">
+        {messages.map((m, i) => (
+          <span key={i}>{m}</span>
+        ))}
+      </span>
     </div>
   );
 }

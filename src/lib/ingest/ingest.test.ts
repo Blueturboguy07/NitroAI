@@ -102,7 +102,7 @@ describe("ingest() routing", () => {
   });
 
   it("routes 'audio' to needsTranscription with the blob attached", async () => {
-    const blob = new Blob(["fake audio bytes"], { type: "audio/mpeg" });
+    const blob = new Blob([new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20])], { type: "audio/wav" });
     const result = await ingest({ kind: "audio", file: blob, filename: "lecture.mp3" });
     expect(result.needsTranscription).toBe(true);
     expect(result.text).toBe("");

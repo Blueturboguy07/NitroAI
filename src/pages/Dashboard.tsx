@@ -33,7 +33,7 @@ const creationCards: {
 }[] = [
   { source: "blank", title: "Blank document", subtitle: "Start from scratch", icon: FilePlus2 },
   { source: "audio", title: "Upload audio", subtitle: "Transcribe an audio file", icon: FileAudio },
-  { source: "document", title: "Document upload", subtitle: "PDF, Word, .txt or .md", icon: FileText },
+  { source: "document", title: "Document upload", subtitle: "PDF, Word (.docx), .txt or .md", icon: FileText },
   { source: "link", title: "Website link", subtitle: "YouTube or website link", icon: Link2 },
 ];
 
