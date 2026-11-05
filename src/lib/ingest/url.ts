@@ -2,12 +2,19 @@ import type { IngestResult } from "./index";
 import { MAX_TEXT_FILE_BYTES, inspectText, zipFlavor } from "./fileTypes";
 import { cutTitle } from "./text";
 
-/* Stop downloading a page at this size. The 2 MB limit applies to the text
-   NitroAI reads from the page (the same limit as a .txt file): the markup of
-   a long article can be over 2 MB while its text is far less. */
-const MAX_PAGE_BYTES = 8 * 1024 * 1024;
+/* Stop downloading a page at this size (the local server has the same
+   limit, server/fetchPage.mjs). The 2 MB limit applies to the text NitroAI
+   reads from the page (the same limit as a .txt file): the markup of a long
+   article can be over 2 MB while its text is far less. */
+export const MAX_PAGE_BYTES = 8 * 1024 * 1024;
 
 const LINK_HELP = "Paste a link to a web page or a YouTube video.";
+
+export const LINK_SCHEME_MESSAGE = `NitroAI reads http and https links only. ${LINK_HELP}`;
+export const PAGE_DOWNLOAD_TOO_LARGE_MESSAGE = `That page is more than 8 MB to download, and NitroAI downloads up to 8 MB from a link. Save the part you need as a .txt or PDF file and upload that.`;
+export const PAGE_TEXT_TOO_LARGE_MESSAGE = `That page has more than 2 MB of text, and NitroAI reads up to 2 MB. Save the part you need as a .txt or PDF file and upload that.`;
+
+class LinkError extends Error {}
 
 /* The body, read up to `max` bytes; null when the page is larger. */
 async function readCapped(res: Response, max: number): Promise<Uint8Array | null> {
@@ -39,6 +46,33 @@ async function readCapped(res: Response, max: number): Promise<Uint8Array | null
   return out;
 }
 
+/* The page bytes, from the app's local server (GET /api/fetch-page): a
+   fetch() from the renderer fails with "Failed to fetch" on most sites,
+   because they send no CORS header for the app's origin. A host without
+   that route (the plain web build) answers with its SPA page instead; then
+   the renderer fetches the page itself, as before. `bytes` is null when the
+   page is larger than MAX_PAGE_BYTES. */
+async function download(url: string): Promise<{ bytes: Uint8Array | null; contentType: string | null }> {
+  let res: Response | null = null;
+  try {
+    res = await fetch(`/api/fetch-page?url=${encodeURIComponent(url)}`, { headers: { "x-nitroai-fetch": "1" } });
+  } catch {
+    res = null;
+  }
+  if (res && res.headers.get("x-nitroai-page") === "1") {
+    if (res.ok) return { bytes: await readCapped(res, MAX_PAGE_BYTES), contentType: res.headers.get("x-nitroai-content-type") };
+    const body = (await res.json().catch(() => ({}))) as { error?: string; status?: number; reason?: string };
+    if (body.error === "too_large") return { bytes: null, contentType: null };
+    if (body.error === "bad_scheme") throw new LinkError(LINK_SCHEME_MESSAGE);
+    if (body.error === "status") throw new Error(`server responded with ${body.status}`);
+    if (body.error === "timeout") throw new Error("the site took too long to answer");
+    throw new Error(body.reason ?? "the site could not be reached");
+  }
+  const direct = await fetch(url);
+  if (!direct.ok) throw new Error(`server responded with ${direct.status}`);
+  return { bytes: await readCapped(direct, MAX_PAGE_BYTES), contentType: direct.headers.get("content-type") };
+}
+
 function decodePage(bytes: Uint8Array, contentType: string | null, fallback: string): string {
   const charset = /charset=["']?([\w-]+)/i.exec(contentType ?? "")?.[1];
   if (charset) {
@@ -62,20 +96,26 @@ export async function ingestUrl(url: string): Promise<IngestResult> {
     throw new Error("Network access is unavailable in this environment.");
   }
 
+  let parsed: URL;
+  try {
+    // "en.wikipedia.org/wiki/X" (no scheme) means https. Before, it was
+    // fetched as a path on the app's own server.
+    parsed = new URL(/^[a-z][a-z0-9+.-]*:/i.test(url.trim()) ? url.trim() : `https://${url.trim()}`);
+  } catch {
+    throw new Error(`"${url}" is not a link. ${LINK_HELP}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error(LINK_SCHEME_MESSAGE);
+
   let bytes: Uint8Array | null;
   let contentType: string | null;
   try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      throw new Error(`server responded with ${res.status}`);
-    }
-    contentType = res.headers.get("content-type");
-    bytes = await readCapped(res, MAX_PAGE_BYTES);
+    ({ bytes, contentType } = await download(parsed.href));
   } catch (err) {
+    if (err instanceof LinkError) throw new Error(err.message);
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(`Couldn't fetch "${url}" (${reason}). Check the URL and your connection.`);
   }
-  if (!bytes) throw new Error(`That link is too large: NitroAI reads up to 2 MB of text from a page. ${LINK_HELP}`);
+  if (!bytes) throw new Error(PAGE_DOWNLOAD_TOO_LARGE_MESSAGE);
 
   /* The same check as a .txt upload. Before, a link to an image or a PDF
      was read as text and sent to the model (paid calls of garbage). */
@@ -111,9 +151,7 @@ export async function ingestUrl(url: string): Promise<IngestResult> {
   if (!text) {
     throw new Error(`Couldn't find readable text on "${url}".`);
   }
-  if (new TextEncoder().encode(text).length > MAX_TEXT_FILE_BYTES) {
-    throw new Error(`That page has more than 2 MB of text, and NitroAI reads up to 2 MB. Save the part you need as a .txt or PDF file and upload that.`);
-  }
+  if (new TextEncoder().encode(text).length > MAX_TEXT_FILE_BYTES) throw new Error(PAGE_TEXT_TOO_LARGE_MESSAGE);
 
   return { text, title, meta: { url } };
 }

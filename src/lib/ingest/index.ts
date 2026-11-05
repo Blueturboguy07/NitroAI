@@ -7,7 +7,7 @@ import { ingestUrl } from "./url";
 import { ingestYoutube } from "./youtube";
 import { ingestPdf } from "./pdf";
 import { ingestDocx } from "./docx";
-import { audioBlobProblem, checkDocument, documentKind, readSample, unsupportedFileMessage, type DocumentKind } from "./fileTypes";
+import { audioBlobProblem, checkDocument, documentKind, readSample, refusedFileMessage, type DocumentKind } from "./fileTypes";
 
 export interface IngestInput {
   kind: SourceKind;
@@ -62,7 +62,7 @@ export async function ingest(input: IngestInput): Promise<IngestResult> {
          .pptx, .xlsx, .zip …) is refused here, before any model call. */
       if (input.text === undefined && input.file) {
         const name = nameOf(input);
-        if (name !== undefined && documentKind(name) !== "text") throw new Error(unsupportedFileMessage(name));
+        if (name !== undefined && documentKind(name) !== "text") throw new Error(await refusedFileMessage(input.file, name));
         const result = await ingestTextFile(input.file, name);
         return withFilenameFallback(result, input.filename);
       }
@@ -90,7 +90,7 @@ export async function ingest(input: IngestInput): Promise<IngestResult> {
       if (!input.file) throw new Error("A DOCX file is required.");
       const name = nameOf(input);
       // .doc (Word 97–2003) is not a zip: the .docx reader failed with a raw JSZip error.
-      if (name !== undefined && documentKind(name) !== "docx") throw new Error(unsupportedFileMessage(name));
+      if (name !== undefined && documentKind(name) !== "docx") throw new Error(await refusedFileMessage(input.file, name));
       await assertDocument(input.file, name, "docx");
       const result = await ingestDocx(input.file);
       return withFilenameFallback(result, input.filename);

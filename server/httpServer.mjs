@@ -2,6 +2,7 @@
  * native-helper endpoints the browser can't do itself:
  *   GET  /api/health               → liveness (the shell polls this)
  *   GET  /api/youtube-extract?url= → yt-dlp captions/audio
+ *   GET  /api/fetch-page?url=      → a web page's bytes for the link reader (see fetchPage.mjs)
  *   GET  /api/local/status         → Ollama provisioning state
  *   GET  /api/local/setup          → SSE stream that installs/starts/pulls Ollama
  *   *    /api/publik/*              → publik API credential + streaming proxy (see publikProxy.mjs)
@@ -18,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { extractYoutube } from "./ytdlp.mjs";
 import { provision, status } from "./ollama.mjs";
 import { createPublikHandler } from "./publikProxy.mjs";
+import { handleFetchPage } from "./fetchPage.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -78,6 +80,8 @@ async function handleApi(req, res, url, opts) {
   }
 
   if (await opts.publik(req, res, url)) return;
+
+  if (p === "/api/fetch-page") return handleFetchPage(req, res, url, opts.fetchPage);
 
   if (p === "/api/youtube-extract") {
     const target = url.searchParams.get("url");
@@ -146,8 +150,9 @@ export const STABLE_PORTS = [41763, 41764, 41765, 41766, 41767, 41768, 41769, 41
    sibling dist/ (works in dev and when packaged with app.asar layout).
    `ports` — try each candidate in order (EADDRINUSE → next); `port` is the
    one-candidate shorthand. `publik` — { token, appVersion, credentialFile?,
-   baseUrl?, fetchImpl? } for the publik credential + proxy routes. */
-export function startServer({ distDir, binDir, port = 0, ports, host = "127.0.0.1", publik = {} } = {}) {
+   baseUrl?, fetchImpl? } for the publik credential + proxy routes.
+   `fetchPage` — { fetchImpl?, maxBytes?, timeoutMs? } for /api/fetch-page (tests). */
+export function startServer({ distDir, binDir, port = 0, ports, host = "127.0.0.1", publik = {}, fetchPage = {} } = {}) {
   const resolvedDist = distDir ?? path.join(__dirname, "..", "dist");
   const candidates = Array.isArray(ports) && ports.length ? ports : [port];
   const handlePublik = createPublikHandler(publik);
@@ -156,7 +161,8 @@ export function startServer({ distDir, binDir, port = 0, ports, host = "127.0.0.
     const url = new URL(req.url ?? "/", `http://${host}`);
     if (url.pathname.startsWith("/api/")) {
       const appOrigin = `http://${host}:${server.address()?.port ?? candidates[0]}`;
-      handleApi(req, res, url, { binDir, appOrigin, publik: handlePublik }).catch((err) =>
+      const pageOpts = { ...fetchPage, port: () => server.address()?.port };
+      handleApi(req, res, url, { binDir, appOrigin, publik: handlePublik, fetchPage: pageOpts }).catch((err) =>
         sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" }),
       );
       return;

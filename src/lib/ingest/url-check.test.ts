@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 /* Round 4, item 2: the Website-link reader had no binary check (a link to a
    PNG became paid calls) and no size limit. It now uses the shared check and
-   the 2 MB text limit. */
+   the 2 MB text limit.
+   Round 5, item 3: the renderer's own fetch() failed with "Failed to fetch"
+   (CORS) on most real sites. The page now comes from the app's local server
+   (GET /api/fetch-page, server/fetchPage.mjs); `serve` stands in for it. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ingest } from "./index";
 import { createNoteFromSources } from "../generation/pipeline";
@@ -11,10 +14,25 @@ import type { Engine } from "../engine/types";
 
 afterEach(() => vi.unstubAllGlobals());
 
+/* The local server's route answers; a direct fetch of a site fails as CORS
+   makes it fail in the app. */
 function serve(body: Uint8Array | string, type: string) {
+  const calls: string[] = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response(typeof body === "string" ? body : body.slice(), { status: 200, headers: { "content-type": type } })),
+    vi.fn(async (input: string) => {
+      calls.push(String(input));
+      if (!String(input).startsWith("/api/fetch-page?url=")) throw new TypeError("Failed to fetch");
+      const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body.slice();
+      return new Response(bytes, { status: 200, headers: { "x-nitroai-page": "1", "x-nitroai-content-type": type, "content-type": "application/octet-stream" } });
+    }),
+  );
+  return calls;
+}
+function serveError(status: number, body: object) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { "x-nitroai-page": "1", "content-type": "application/json" } })),
   );
 }
 const png = () => {
@@ -56,7 +74,9 @@ describe("Website link — the shared check", () => {
 
   it("a page with more than 2 MB of text is refused", async () => {
     serve(`<html><body><p>${"Calvin cycle. ".repeat(160_000)}</p></body></html>`, "text/html; charset=utf-8");
-    await expect(ingest({ kind: "url", url: "https://example.com/huge" })).rejects.toThrow(/more than 2 MB of text/);
+    await expect(ingest({ kind: "url", url: "https://example.com/huge" })).rejects.toThrow(
+      "That page has more than 2 MB of text, and NitroAI reads up to 2 MB. Save the part you need as a .txt or PDF file and upload that.",
+    );
   });
 
   it("a normal page still reads, with its title cut at a word", async () => {
@@ -70,5 +90,60 @@ describe("Website link — the shared check", () => {
     const full = "The Calvin cycle: how plants fix carbon dioxide into sugar in the stroma of every chloroplast";
     expect(full.startsWith(res.title!)).toBe(true);
     expect(full[res.title!.length]).toBe(" ");
+  });
+});
+
+describe("Website link — downloaded by the local server (round 5)", () => {
+  const ARTICLE = `<html><head><title>Photosynthesis - Wikipedia</title></head><body><p>Photosynthesis is how plants make sugar.</p></body></html>`;
+
+  it("the page comes from /api/fetch-page, not from the renderer's own fetch (which CORS blocks)", async () => {
+    const calls = serve(ARTICLE, "text/html; charset=UTF-8");
+    const res = await ingest({ kind: "url", url: "https://en.wikipedia.org/wiki/Photosynthesis" });
+    expect(res.text).toContain("Photosynthesis is how plants make sugar.");
+    expect(calls).toEqual([`/api/fetch-page?url=${encodeURIComponent("https://en.wikipedia.org/wiki/Photosynthesis")}`]);
+  });
+
+  it("only http and https links are read, with 0 downloads", async () => {
+    const calls = serve(ARTICLE, "text/html");
+    for (const url of ["file:///etc/passwd", "ftp://example.com/notes.txt", "javascript:alert(1)"]) {
+      await expect(ingest({ kind: "url", url }), url).rejects.toThrow("NitroAI reads http and https links only. Paste a link to a web page or a YouTube video.");
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("a link with no scheme means https", async () => {
+    const calls = serve(ARTICLE, "text/html");
+    await ingest({ kind: "url", url: "en.wikipedia.org/wiki/Photosynthesis" });
+    expect(calls[0]).toBe(`/api/fetch-page?url=${encodeURIComponent("https://en.wikipedia.org/wiki/Photosynthesis")}`);
+  });
+
+  it("a page over the 8 MB download cap says 8 MB, not 2 MB", async () => {
+    serveError(413, { error: "too_large", limit: 8 * 1024 * 1024 });
+    const err = (await ingest({ kind: "url", url: "https://example.com/huge.html" }).catch((e: Error) => e)) as Error;
+    expect(err.message).toBe("That page is more than 8 MB to download, and NitroAI downloads up to 8 MB from a link. Save the part you need as a .txt or PDF file and upload that.");
+  });
+
+  it("the site's error and an unreachable site are said in words", async () => {
+    serveError(502, { error: "status", status: 404 });
+    await expect(ingest({ kind: "url", url: "https://example.com/gone" })).rejects.toThrow('Couldn\'t fetch "https://example.com/gone" (server responded with 404). Check the URL and your connection.');
+    serveError(502, { error: "network", reason: "the site was not found" });
+    await expect(ingest({ kind: "url", url: "https://no-such-site.example/" })).rejects.toThrow("(the site was not found)");
+    serveError(504, { error: "timeout" });
+    await expect(ingest({ kind: "url", url: "https://slow.example/" })).rejects.toThrow("(the site took too long to answer)");
+  });
+
+  it("a host without the route (the web build) fetches the page itself, as before", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        calls.push(String(input));
+        if (String(input).startsWith("/api/")) return new Response("<html>app</html>", { status: 200, headers: { "content-type": "text/html" } });
+        return new Response(ARTICLE, { status: 200, headers: { "content-type": "text/html" } });
+      }),
+    );
+    const res = await ingest({ kind: "url", url: "https://example.com/a" });
+    expect(res.text).toContain("Photosynthesis is how plants make sugar.");
+    expect(calls).toEqual([`/api/fetch-page?url=${encodeURIComponent("https://example.com/a")}`, "https://example.com/a"]);
   });
 });

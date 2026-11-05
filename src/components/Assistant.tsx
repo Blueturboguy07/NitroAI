@@ -6,7 +6,7 @@ import { ErrorNotice } from "./PublikNotice";
 import { chatAnswer } from "../lib/generation";
 import { ingest } from "../lib/ingest";
 import { ingestTextFile } from "../lib/ingest/text";
-import { oldWordMessage } from "../lib/ingest/fileTypes";
+import { refusedFileMessage } from "../lib/ingest/fileTypes";
 import { renderMarkdown } from "../lib/markdown";
 import { uuid, now } from "../lib/ids";
 import type { ChatTurn, Note } from "../lib/types";
@@ -23,7 +23,7 @@ async function fileToAttachment(file: File): Promise<Attachment> {
   if (ext === "pdf") {
     return { name: file.name, text: (await ingest({ kind: "pdf", file, filename: file.name })).text };
   }
-  if (ext === "doc") throw new Error(oldWordMessage(file.name));
+  if (ext === "doc") throw new Error(await refusedFileMessage(file, file.name));
   if (ext === "docx") {
     return { name: file.name, text: (await ingest({ kind: "docx", file, filename: file.name })).text };
   }

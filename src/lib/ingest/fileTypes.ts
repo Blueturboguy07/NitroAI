@@ -8,9 +8,10 @@
    dropped .pptx became 8 paid calls of garbage). 69b560a checked only for a
    NUL byte in the first 8 KB, which a real PDF renamed .txt often does not
    have (TypeBullet.pdf: 9 calls), and skipped the check after FF FE. Now a
-   file is refused on a known binary signature (also after a byte-order mark)
-   and, after decoding, when more than 2% of its characters are U+FFFD or
-   control characters. */
+   file is refused on a known binary signature (also after a byte-order mark,
+   and a PDF header up to 1 KB in), and after decoding when it has too many
+   stray control characters or broken UTF-16 (see looksLikeText for the
+   limits and the corpus they come from). */
 
 export type DocumentKind = "pdf" | "docx" | "text";
 
@@ -27,9 +28,13 @@ export const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024;
 /* How much of a "text" file is checked for a NUL byte. */
 export const BINARY_SNIFF_BYTES = 8 * 1024;
 
-/* Decoded text with more than this share of U+FFFD or control characters
-   (other than tab, CR and LF) is binary data, not text. */
-export const MAX_GARBLED_SHARE = 0.02;
+/* Limits for bytes that should be text, chosen from a corpus (round 5, see
+   looksLikeText and text-check-corpus.test.ts for the numbers). */
+export const MAX_CONTROL_SHARE = 0.05;
+export const MAX_BROKEN_UTF16_SHARE = 0.001;
+/* Below this many bad characters a text is never refused: in a short text
+   one or two marks give a large share. 1 KB of binary data has about 100. */
+export const MIN_BAD_CHARACTERS = 8;
 
 export const DOCUMENT_ACCEPT = ".pdf,.docx,.txt,.md";
 
@@ -63,6 +68,12 @@ export function unsupportedFileMessage(name?: string): string {
 
 export function oldWordMessage(name?: string): string {
   return `${quoted(name, "This file")} is an old Word file (.doc), and NitroAI can't read it. ${OLD_WORD_ADVICE}`;
+}
+
+/* The OLE signature is the same for .doc, .ppt and .xls, so a file with
+   another name and OLE bytes may be any of the three. */
+export function oldOfficeMessage(name?: string): string {
+  return `${quoted(name, "This file")} is an old Office file (.doc, .ppt or .xls), and NitroAI can't read it. Save a Word file as .docx (Word: File > Save As) and slides as PDF, then upload that.`;
 }
 
 /* To 0.01 MB. A file over the limit never reads "2.00 MB" (or "2.0 MB … up
@@ -132,13 +143,34 @@ export function signatureOf(b: Uint8Array): Signature | null {
   return null;
 }
 
-/* A PDF may have up to 1 KB of other bytes before "%PDF-". */
-function hasPdfHeader(b: Uint8Array): boolean {
-  const n = Math.min(b.length, 1024);
-  for (let i = 0; i + 5 <= n; i++) {
-    if (b[i] === 0x25 && b[i + 1] === 0x50 && b[i + 2] === 0x44 && b[i + 3] === 0x46 && b[i + 4] === 0x2d) return true;
+/* PDF readers accept up to 1 KB of other bytes before "%PDF-". */
+const PDF_HEADER_WINDOW = 1024;
+
+function indexOfAscii(b: Uint8Array, word: string, from: number, to: number): number {
+  const end = Math.min(b.length, to) - word.length;
+  outer: for (let i = Math.max(0, from); i <= end; i++) {
+    for (let j = 0; j < word.length; j++) if (b[i + j] !== word.charCodeAt(j)) continue outer;
+    return i;
   }
-  return false;
+  return -1;
+}
+
+/* For a file named .pdf: "%PDF-" in the first 1 KB is enough. */
+export function hasPdfHeader(b: Uint8Array): boolean {
+  return indexOfAscii(b, "%PDF-", 0, PDF_HEADER_WINDOW) >= 0;
+}
+
+/* For bytes that should be text: a PDF with other bytes before its header
+   (the header is not at offset 0, so signatureOf misses it). A text file can
+   mention "%PDF-" near its start, so this also needs a version number after
+   it ("%PDF-1.7") and "%%EOF" in the last 1 KB, as every PDF has. Corpus:
+   1,018 of 1,018 system PDFs end that way; 0 of 1,898 real text files do. */
+export function isPdfAfterJunk(b: Uint8Array): boolean {
+  const at = indexOfAscii(b, "%PDF-", 0, PDF_HEADER_WINDOW);
+  if (at < 0) return false;
+  const digit = (x: number | undefined) => x !== undefined && x >= 0x30 && x <= 0x39;
+  if (!digit(b[at + 5]) || b[at + 6] !== 0x2e || !digit(b[at + 7])) return false;
+  return indexOfAscii(b, "%%EOF", b.length - 1024, b.length) >= 0;
 }
 
 /* The part names in a zip (or a sample of one): read from each local file
@@ -221,15 +253,71 @@ export function decodeText(bytes: Uint8Array): string {
   }
 }
 
-/* Share of characters that are U+FFFD or C0 controls other than tab, CR, LF. */
-export function garbledShare(text: string): number {
-  if (!text.length) return 0;
+/* The control characters in a text that real text does not have. NOT
+   counted: tab, LF, CR, form feed (pdftotext puts one between pages) and
+   vertical tab (PowerPoint copies a soft line break as \v); ESC that starts
+   a terminal colour code (ESC [ …) and a backspace in overstrike (N\bN,
+   _\bN), as in a saved terminal log or man page. Every other C0 character
+   (NUL included) is counted. */
+export function strayControlCount(text: string): number {
   let bad = 0;
   for (let i = 0; i < text.length; i++) {
     const c = text.charCodeAt(i);
-    if (c === 0xfffd || (c < 0x20 && c !== 0x09 && c !== 0x0a && c !== 0x0d)) bad++;
+    if (c >= 0x20 || (c >= 0x09 && c <= 0x0d)) continue;
+    if (c === 0x1b && "[]\\()".includes(text[i + 1] ?? "")) continue;
+    if (c === 0x08 && i > 0) {
+      const a = text[i - 1];
+      const b = text[i + 1] ?? "";
+      if (a > " " && b > " " && (a === b || a === "_" || b === "_")) continue;
+    }
+    bad++;
   }
-  return bad / text.length;
+  return bad;
+}
+
+/* UTF-16 only (the bytes start with FF FE or FE FF): the number of 16-bit
+   units that are half of a surrogate pair with no other half. The decoder
+   turns each one into U+FFFD. Real UTF-16 text has none; other bytes behind
+   a byte-order mark have them. */
+export function brokenUtf16Count(b: Uint8Array): number {
+  if (!isUtf16(b)) return 0;
+  const le = b[0] === 0xff;
+  const units = (b.length - 2) >> 1;
+  const unit = (i: number) => (le ? b[2 + 2 * i] | (b[3 + 2 * i] << 8) : (b[2 + 2 * i] << 8) | b[3 + 2 * i]);
+  let bad = 0;
+  for (let i = 0; i < units; i++) {
+    const u = unit(i);
+    if (u >= 0xd800 && u <= 0xdbff) {
+      const next = i + 1 < units ? unit(i + 1) : 0;
+      if (next >= 0xdc00 && next <= 0xdfff) i++;
+      else bad++;
+    } else if (u >= 0xdc00 && u <= 0xdfff) bad++;
+  }
+  return bad;
+}
+
+/* True when decoded bytes read as text. The limits come from a corpus
+   (round 5; full numbers in text-check-corpus.test.ts):
+   - real text, 1,898 files (pdftotext of 228 PDFs in 3 modes, Markdown,
+     licences, source code, HTML, scripts, man pages, RTF via textutil, 150
+     UTF-16 .strings files and UTF-16 copies, terminal logs, the verifier's
+     B files, and copy-paste variants: ligatures as \x02 or TeX slots, lost
+     glyphs as U+FFFD, \v soft breaks, a form feed after every line):
+     stray controls at most 2.86% (the verifier's ligature copy; 1.38% in
+     the densest file a program made), broken UTF-16 0.
+   - binary that gets past the signature, PDF and NUL checks: stray controls
+     at least 9.61% (8-bit), broken UTF-16 at least 0.26% (after a BOM).
+   5% sits between 2.86% and 9.61%, about 1.8× from each. U+FFFD in the
+   file itself is not counted: no binary file made one in an 8-bit decode
+   (0 of 2,674), and real text has them where a program lost a glyph (4.61%
+   in pdftotext of a real manual, most of a table of contents). */
+export function looksLikeText(bytes: Uint8Array, text: string): boolean {
+  if (!text.length) return true;
+  const controls = strayControlCount(text);
+  if (controls >= MIN_BAD_CHARACTERS && controls / text.length > MAX_CONTROL_SHARE) return false;
+  const broken = brokenUtf16Count(bytes);
+  if (broken >= MIN_BAD_CHARACTERS && broken / text.length > MAX_BROKEN_UTF16_SHARE) return false;
+  return true;
 }
 
 /* True when the start of the file has a NUL byte. A UTF-16 file (it starts
@@ -248,11 +336,11 @@ export type TextFinding = { ok: true; text: string } | { ok: false; signature: S
    attachment, a web page. Size is checked by the caller (it knows the size
    before it reads the bytes). */
 export function inspectText(bytes: Uint8Array): TextFinding {
-  const sig = signatureOf(bytes);
+  const sig = signatureOf(bytes) ?? (isPdfAfterJunk(bytes) ? "pdf" : null);
   if (sig) return { ok: false, signature: sig, words: signatureWords(sig, bytes) };
   if (looksBinary(bytes)) return { ok: false, signature: null, words: "binary data" };
   const text = decodeText(bytes);
-  if (garbledShare(text) > MAX_GARBLED_SHARE) return { ok: false, signature: null, words: "binary data" };
+  if (!looksLikeText(bytes, text)) return { ok: false, signature: null, words: "binary data" };
   return { ok: true, text };
 }
 
@@ -300,13 +388,29 @@ export function checkDocument(name: string | undefined, kind: DocumentKind, size
     if (flavor === "word") return { problem: null };
     return { problem: `${what} is a zip file with no Word document in it, so NitroAI can't read it. Open it in Word and save it as .docx again.` };
   }
-  if (sig === "ole") return { problem: oldWordMessage(name) };
-  if (sig === "pdf") return { problem: `${what} is a PDF file, not a Word file. Change its name to end in .pdf, then upload it as a PDF.` };
+  if (sig === "ole") return { problem: oldOfficeMessage(name) };
+  const found = inspectText(bytes);
+  if (sig === "pdf" || (!found.ok && found.signature === "pdf")) {
+    return { problem: `${what} is a PDF file, not a Word file. Change its name to end in .pdf, then upload it as a PDF.` };
+  }
   if (sig) return { problem: `${what} is ${signatureWords(sig, bytes)}, not a Word file. ${UNSUPPORTED_FILE_MESSAGE}` };
-  if (inspectText(bytes).ok) {
+  if (found.ok) {
     return { problem: `${what} is a text file, not a Word file. Change its name to end in .txt, then upload it.` };
   }
   return { problem: `${what} is not a Word .docx file, so NitroAI can't read it. Open it in Word and save it as .docx again.` };
+}
+
+/* A file named .doc. Its bytes say what it is: an old Word file (the usual
+   case) gets the Save As advice; a .docx, a PowerPoint file, a PDF or text
+   with that name gets the message for what it really is. */
+export function docFileCheck(name: string | undefined, size: number, bytes: Uint8Array): string {
+  const what = quoted(name, "This file");
+  const sig = signatureOf(bytes);
+  if (!bytes.length || sig === "ole") return oldWordMessage(name);
+  if (sig === "zip" && zipFlavor(bytes) === "word") {
+    return `${what} is a Word .docx file. Change its name to end in .docx, then upload it.`;
+  }
+  return checkDocument(name, "docx", size, bytes).problem ?? oldWordMessage(name);
 }
 
 /* The bytes checkDocument needs: the whole file for .txt/.md (after the size
@@ -327,9 +431,16 @@ export async function readSample(file: Blob, kind: DocumentKind): Promise<Uint8A
 }
 
 /* The upload window's check for one picked or dropped file. */
+/* The message for a file NitroAI does not read, by its name; for a .doc
+   name, also by its bytes (see docFileCheck). */
+export async function refusedFileMessage(file: Blob, name: string): Promise<string> {
+  if (extensionOf(name) === "doc") return docFileCheck(name, file.size, await readSample(file, "docx"));
+  return unsupportedFileMessage(name);
+}
+
 export async function documentFileProblem(file: File): Promise<string | null> {
   const kind = documentKind(file.name);
-  if (!kind) return unsupportedFileMessage(file.name);
+  if (!kind) return refusedFileMessage(file, file.name);
   if (kind === "text" && file.size > MAX_TEXT_FILE_BYTES) return textTooLargeMessage(file.name, file.size);
   return checkDocument(file.name, kind, file.size, await readSample(file, kind)).problem;
 }
@@ -348,7 +459,7 @@ export function audioFileProblem(name: string | undefined, head: Uint8Array): st
   const sig = signatureOf(head);
   if (sig === "riff" || sig === "ogg" || sig === "id3" || sig === "mp4") return null;
   if (sig) return `${what} is ${signatureWords(sig, head)}, not an audio or video file. ${AUDIO_HELP}`;
-  if (head.length && !looksBinary(head) && garbledShare(decodeText(head)) <= MAX_GARBLED_SHARE) {
+  if (head.length && !looksBinary(head) && looksLikeText(head, decodeText(head))) {
     return `${what} is a text file, not an audio or video file. Use "Document upload" for text. ${AUDIO_HELP}`;
   }
   return null;

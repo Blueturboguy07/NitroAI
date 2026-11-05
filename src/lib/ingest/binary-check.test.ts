@@ -127,12 +127,12 @@ describe("1 — one shared check: known binary signatures and garbled text", () 
     }
   });
 
-  it("text that decodes to more than 2% U+FFFD or control characters is refused, UTF-16 too", async () => {
-    // UTF-16 LE BOM + noise with no known signature.
+  it("bytes with more than 5% stray control characters, or broken UTF-16, are refused (round 5 limits)", async () => {
+    // UTF-16 LE BOM + noise with no known signature: lone surrogates.
     await expect(upload(concat(new Uint8Array([0xff, 0xfe]), noise(20_000, 3)), "utf16-noise.txt")).rejects.toThrow(/not plain text \(it contains binary data\)/);
-    // Windows-1252 bytes full of control characters, no NUL anywhere.
+    // Bytes with a control character every 10 (10%, as random bytes have), no NUL anywhere.
     const ctl = enc("Notes ".repeat(500));
-    for (let i = 0; i < ctl.length; i += 20) ctl[i] = 0x01;
+    for (let i = 0; i < ctl.length; i += 10) ctl[i] = 0x01;
     await expect(upload(ctl, "controls.md")).rejects.toThrow(/not plain text/);
   });
 
@@ -178,8 +178,19 @@ describe("3 — .doc is refused in words", () => {
     expect((err as Error).message).not.toMatch(/central directory|zip/i);
   });
 
-  it("a Word 97 file named .docx gets the same advice", async () => {
-    await expect(upload(word97(), "old.docx", "docx")).rejects.toThrow(ADVICE);
+  it("a .doc name is checked by its bytes: a .pptx or a .docx named .doc gets the message for what it is (round 5)", async () => {
+    await expect(upload(fakePptx(), "slides.doc", "docx")).rejects.toThrow('"slides.doc" is a PowerPoint file, not a Word file. For slides, save them as PDF and upload that.');
+    const docx = concat(zipEntry("[Content_Types].xml", noise(30, 3)), zipEntry("word/document.xml", noise(500, 4)));
+    await expect(upload(docx, "essay.doc", "docx")).rejects.toThrow('"essay.doc" is a Word .docx file. Change its name to end in .docx, then upload it.');
+    await expect(upload(word97(), "real.doc", "docx")).rejects.toThrow(`"real.doc" is an old Word file (.doc), and NitroAI can't read it. ${ADVICE}`);
+    const { documentFileProblem } = await import("./fileTypes");
+    expect(await documentFileProblem(new File([fakePptx()], "slides.doc"))).toMatch(/"slides.doc" is a PowerPoint file/);
+  });
+
+  it("OLE bytes with another name may be .doc, .ppt or .xls: the message says an old Office file (round 5)", async () => {
+    await expect(upload(word97(), "old.docx", "docx")).rejects.toThrow(
+      '"old.docx" is an old Office file (.doc, .ppt or .xls), and NitroAI can\'t read it. Save a Word file as .docx (Word: File > Save As) and slides as PDF, then upload that.',
+    );
   });
 });
 
