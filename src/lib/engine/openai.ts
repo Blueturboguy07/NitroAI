@@ -22,10 +22,11 @@ import type {
   TranscriptSegment,
   TtsOptions,
 } from "./types";
-import { EngineError, cappedToFrom, truncatedError } from "./types";
+import { EngineError, cappedToFrom, incompleteError, truncatedError } from "./types";
+import { stripRefusal } from "./refusal";
 import { UNREADABLE_AUDIO_MESSAGE } from "../ingest/fileTypes";
 import { unsupportedMessage, type Task } from "./router";
-import { chunkAudioForUpload, type AudioChunk, type AudioDecoder } from "../audio/chunk";
+import { chunkAudioForUpload, uploadFile, type AudioChunk, type AudioDecoder } from "../audio/chunk";
 import { APP_HEADER, isLocalApi } from "../localApi";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
@@ -105,6 +106,11 @@ export class OpenAIEngine implements Engine {
     /* True when the model reported reasoning: reasoning text in the stream,
        or reasoning tokens in the last chunk's usage (publik API sends it). */
     let reasoned = false;
+    /* The host that served the answer (OpenRouter names it in each chunk),
+       and an error event in the stream (publik API sends one when the model
+       provider stops answering). */
+    let upstream: string | undefined;
+    let streamError: string | null = null;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -127,15 +133,14 @@ export class OpenAIEngine implements Engine {
           const finish: unknown = json.choices?.[0]?.finish_reason;
           if (typeof finish === "string" && finish) finishReason = finish;
           if (reportsReasoning(json.choices?.[0]?.delta, json.usage)) reasoned = true;
+          if (typeof json.provider === "string" && json.provider) upstream = json.provider;
+          if (json.error) streamError = typeof json.error?.message === "string" ? json.error.message : "error";
         } catch {
           /* malformed SSE chunk; skip it */
         }
       }
     }
-    if (finishReason === "length") {
-      throw truncatedError(full, cappedToFrom(res.headers.get("x-publik-output-capped")), reasoned);
-    }
-    return full;
+    return finishOrThrow(full, streamError ? "error" : finishReason, reasoned, res, upstream);
   }
 
   async structured<T>(opts: StructuredOptions<T>): Promise<T> {
@@ -153,16 +158,20 @@ export class OpenAIEngine implements Engine {
     }, opts.signal);
 
     const json = await res.json();
-    const content = json.choices?.[0]?.message?.content;
+    const choice = json.choices?.[0];
+    const content = choice?.message?.content;
     // A cut-off JSON answer is not parseable; say what happened instead of
-    // letting "Unexpected end of JSON input" reach the screen.
-    if (json.choices?.[0]?.finish_reason === "length") {
-      throw truncatedError(
-        typeof content === "string" ? content : "",
-        cappedToFrom(res.headers.get("x-publik-output-capped")),
-        reportsReasoning(json.choices?.[0]?.message, json.usage),
-      );
-    }
+    // letting "Unexpected end of JSON input" reach the screen. A content
+    // filter stop (or OpenAI's `refusal` field) is "incomplete", never JSON.
+    const finish: string | null = typeof choice?.finish_reason === "string" && choice.finish_reason ? choice.finish_reason : null;
+    const refused = typeof choice?.message?.refusal === "string" && choice.message.refusal ? "content_filter" : null;
+    finishOrThrow(
+      typeof content === "string" ? content : "",
+      refused ?? (json.error ? "error" : finish),
+      reportsReasoning(choice?.message, json.usage),
+      res,
+      typeof json.provider === "string" ? json.provider : undefined,
+    );
     if (typeof content !== "string") {
       throw new EngineError(`${this.label()} returned no structured content.`, "unknown");
     }
@@ -183,7 +192,7 @@ export class OpenAIEngine implements Engine {
       chunks =
         this.provider === "publik"
           ? await chunkAudioForUpload(audio, this.audioDecoder ? { decode: this.audioDecoder } : {})
-          : [{ blob: audio, filename: "audio.webm", offsetSeconds: 0 }];
+          : [{ ...(await uploadFile(audio)), offsetSeconds: 0 }];
     } catch (err) {
       // WebAudio's "Unable to decode audio data" never reaches the user.
       console.warn("NitroAI: audio decode failed", err);
@@ -498,6 +507,19 @@ async function mapError(res: Response, provider: "openai" | "publik"): Promise<E
   if (res.status === 429) return new EngineError(message, "rate_limit");
   if (res.status === 403) return new EngineError(message, "model_missing");
   return new EngineError(message, "unknown");
+}
+
+/* The end of every chat call. Only a clean "stop" with no provider refusal
+   text is a whole answer; it comes back unchanged. Everything else throws:
+   "length" → truncated (as before); "content_filter", "error", any other
+   reason, or no finish reason at all → incomplete. The partial text in the
+   error never carries the provider's refusal message. */
+function finishOrThrow(full: string, finishReason: string | null, reasoned: boolean, res: Response, upstream?: string): string {
+  const { text, refusal } = stripRefusal(full);
+  if (refusal) throw incompleteError(text, "content_filter", upstream);
+  if (finishReason === "stop") return full;
+  if (finishReason === "length") throw truncatedError(text, cappedToFrom(res.headers.get("x-publik-output-capped")), reasoned);
+  throw incompleteError(text, finishReason ?? "none", upstream);
 }
 
 /* Did the model report reasoning (thinking)? Reasoning text in a stream

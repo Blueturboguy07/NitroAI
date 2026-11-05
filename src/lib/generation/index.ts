@@ -2,7 +2,7 @@
    and returns domain objects. Persistence is the caller's job. */
 
 import type { Engine, ChatMessage, CompletionOptions, StructuredOptions, TokenHandler } from "../engine/types";
-import { EngineError } from "../engine/types";
+import { EngineError, isFiltered, isIncomplete } from "../engine/types";
 import type {
   Block,
   ChatTurn,
@@ -54,7 +54,15 @@ const STUDY_TOKENS = 8000; // grounding cap for cards/quiz/chat/podcast
    a small balance (x-publik-output-capped). */
 export const NOTE_MAX_TOKENS = 16000; // single pass and the merge step
 export const SECTION_MAX_TOKENS = 12000; // one section of a long document
-export const STUDY_MAX_TOKENS = 16000; // flashcards, quiz, podcast script (JSON)
+export const STUDY_MAX_TOKENS = 16000; // flashcards and quiz (JSON)
+/* The podcast script goes to the FAST tier (round 9). On publik-balanced
+   (xiaomi/mimo-v2.6-pro) a "Short" script on 2026-11-05 thought for 7,946
+   tokens although reasoning_effort was "low": 10,163 output tokens, $0.125
+   and 3.5 minutes for 2,217 tokens of script. Rewriting notes as a dialogue
+   needs no long thinking, and publik-fast (z-ai/glm-5.3-flash) thinks for
+   about 30 tokens at most. The caps leave about 2.5 times the measured
+   script length (short = 12 turns ≈ 2,200 tokens). */
+export const PODCAST_MAX_TOKENS = { short: 6000, medium: 10000, long: 16000 } as const;
 export const CHAT_MAX_TOKENS = 12000;
 export const TITLE_MAX_TOKENS = 1000;
 /* Think briefly, then write. The gateway's default on publik-balanced is
@@ -63,12 +71,23 @@ export const TITLE_MAX_TOKENS = 1000;
 export const REASONING_EFFORT = "low" as const;
 
 const isTruncated = (e: unknown): e is EngineError => e instanceof EngineError && e.kind === "truncated";
+/* A call that did not end with a clean "stop": the length limit
+   ("truncated"), or a content filter, a provider error, or a stream with no
+   end ("incomplete"). */
+const isCut = (e: unknown): e is EngineError => isTruncated(e) || isIncomplete(e);
 
-/* What one call that may end at the cap gave back: the text, and the
-   "truncated" error when the text is cut short (null when it is whole). */
+/* The other tier: another model, and on publik API another provider
+   (publik-balanced = xiaomi/mimo-v2.6-pro, publik-fast = z-ai/glm-5.3-flash).
+   A content filter is the provider's own; the other one may not stop. */
+const otherTier = (tier: CompletionOptions["tier"]): "fast" | "strong" => (tier === "fast" ? "strong" : "fast");
+
+/* What one call that may end early gave back: the text, and the error when
+   the text is not whole (null when it is). `retried`: the call already had
+   its second try, on the other tier. */
 export interface Fitted {
   text: string;
   cut: EngineError | null;
+  retried?: boolean;
 }
 
 /* A completion that never ends empty without the caller knowing.
@@ -78,24 +97,42 @@ export interface Fitted {
      publik-fast calls: 30 reasoning tokens at most), so the cap goes to the
      answer.
    - Still nothing: { text: "" } with the reason in `cut`. Callers turn that
-     into an honest message; nothing empty is ever saved. */
+     into an honest message; nothing empty is ever saved.
+   - INCOMPLETE (the provider's content filter stopped it, the provider
+     reported an error, or the stream ended with no finish reason): one more
+     try on the other tier, so another model and another provider. If that
+     one is whole, it is the answer. If it also stops early, the longer
+     partial text comes back with its reason, `retried: true`. The partial
+     text never carries the provider's refusal message (engine/refusal.ts).
+   `onRestart` runs before a second try, so a caller that shows the stream
+   can clear the first try's text. */
 export async function completeToFit(
   engine: Engine,
   opts: CompletionOptions,
   onToken?: TokenHandler,
+  onRestart?: () => void,
 ): Promise<Fitted> {
   const once = async (o: CompletionOptions): Promise<Fitted> => {
     try {
       const text = await engine.complete(o, onToken);
       return { text, cut: null };
     } catch (e) {
-      if (!isTruncated(e)) throw e;
+      if (!isCut(e)) throw e;
       return { text: e.detail.partialText ?? "", cut: e };
     }
   };
   const first = await once(opts);
+  if (isIncomplete(first.cut) && engine.mode === "cloud") {
+    logStop(first.cut!, opts.tier);
+    onRestart?.();
+    const second = await once({ ...opts, tier: otherTier(opts.tier) });
+    if (!second.cut) return second;
+    const best = second.text.trim().length > first.text.trim().length ? second : first;
+    return { ...best, retried: true };
+  }
   if (first.text.trim()) return first;
   if (engine.mode !== "cloud" || opts.tier === "fast") return first;
+  onRestart?.();
   const second = await once({ ...opts, tier: "fast" });
   if (second.text.trim()) return second;
   // Both empty. Keep "it thought" when either try reported reasoning.
@@ -108,12 +145,25 @@ export async function completeToFit(
 
 /* The JSON twin of completeToFit: a cut JSON answer cannot be used, so a
    cut on the strong tier gets one more try on the fast tier; a second cut is
-   reported in words, never as a JSON parse error. */
+   reported in words, never as a JSON parse error. An incomplete answer
+   (content filter, provider error) on either tier gets one more try on the
+   other tier; if that one stops early too, nothing is saved and the words say
+   which step stopped and why. */
 export async function structuredToFit<T>(engine: Engine, opts: StructuredOptions<T>, what: string): Promise<T> {
   try {
     return await engine.structured<T>(opts);
   } catch (e) {
-    if (!isTruncated(e)) throw e;
+    if (!isCut(e)) throw e;
+    if (isIncomplete(e)) {
+      if (engine.mode !== "cloud") throw studyStopError(what, e, false);
+      logStop(e, opts.tier);
+      try {
+        return await engine.structured<T>({ ...opts, tier: otherTier(opts.tier) });
+      } catch (e2) {
+        if (!isCut(e2)) throw e2;
+        throw isIncomplete(e2) ? studyStopError(what, e2, true) : studyCutError(what, e2);
+      }
+    }
     if (engine.mode === "cloud" && opts.tier !== "fast") {
       try {
         return await engine.structured<T>({ ...opts, tier: "fast" });
@@ -136,6 +186,30 @@ function studyCutError(what: string, e: EngineError): EngineError {
   return new EngineError(
     `The AI reached its length limit before it finished the ${what}, so nothing was saved. Try again.${cappedSentence(e)}`,
     "truncated",
+    e.detail,
+  );
+}
+
+/* One line in the console for support: which finish reason and which host
+   stopped the call, and that it goes again on the other tier. */
+function logStop(e: EngineError, tier: CompletionOptions["tier"]): void {
+  console.warn(
+    `NitroAI: the answer stopped early (finish_reason ${e.detail.finishReason ?? "?"}, provider ${e.detail.upstreamProvider ?? "?"}, tier ${tier ?? "fast"}); trying the ${otherTier(tier)} tier once.`,
+  );
+}
+
+/* Why an incomplete call stopped, in words for the user. */
+function stopReason(e: EngineError, retried: boolean): string {
+  const both = retried ? ", also on a second AI model" : "";
+  if (isFiltered(e)) return `the AI provider's safety filter stopped it${both}`;
+  if (e.detail.finishReason === "none") return `the connection to the AI ended before it was finished${both}`;
+  return `the AI stopped with an error before it was finished${both}`;
+}
+
+function studyStopError(what: string, e: EngineError, retried: boolean): EngineError {
+  return new EngineError(
+    `No ${what} was saved: ${stopReason(e, retried)}. Try again. If it stops again, try a different note.`,
+    "incomplete",
     e.detail,
   );
 }
@@ -173,9 +247,20 @@ function closeOpenBold(md: string): string {
   return `${md}**`;
 }
 
-/* Shown inside the note, where the text stops. */
-export function cutNotice(e: EngineError | null): string {
+/* Shown inside the note, where the text stops. `where`: "Section 2 of 3"
+   when the note was written in sections. */
+export function cutNotice(e: EngineError | null, retried = false, where?: string): string {
+  if (e && isIncomplete(e)) {
+    return `> [!warning] ${where ?? "These notes"} ${where ? "stops" : "stop"} early: ${stopReason(e, retried)}. The rest of ${where ? "this section" : "the notes"} is missing. Create the note again to get it.`;
+  }
   return `> [!warning] These notes stop early: the AI reached its length limit while writing this part. Create the note again, or split the source into smaller parts, to get the rest.${cappedSentence(e)}`;
+}
+
+/* Shown at the TOP of a note that is not whole because a call stopped early
+   (not the length limit, which has its own notice where the text stops):
+   the user sees at once which part is missing and why. */
+export function incompleteNoteNotice(parts: string[]): string {
+  return `> [!warning] This note is not complete. ${parts.join(" ")} Look for the warning in the note.`;
 }
 
 /* Why a call gave no text. "Thinking" only when the model reported
@@ -187,29 +272,38 @@ const NO_TEXT_WORDS = {
   answer: ["answer", "an answer"],
 } as const;
 
-function noTextReason(e: EngineError | null, what: keyof typeof NO_TEXT_WORDS): string {
+function noTextReason(e: EngineError | null, what: keyof typeof NO_TEXT_WORDS, retried = false): string {
   const [no, any] = NO_TEXT_WORDS[what];
+  if (e && isIncomplete(e)) return `${stopReason(e, retried)}, and it wrote no ${no}`;
   if (e?.detail.reasoning) return `the AI used its whole length limit on thinking and wrote no ${no}`;
   if (e) return `the AI stopped at its length limit before it wrote ${any}`;
   return `the AI wrote no ${no}`;
 }
 
-export function missingSectionNotice(part: number, total: number, e: EngineError | null): string {
-  return `> [!warning] Section ${part} of ${total} is missing: ${noTextReason(e, "notes")}. Create the note again to fill it in.${cappedSentence(e)}`;
+export function missingSectionNotice(part: number, total: number, e: EngineError | null, retried = false): string {
+  return `> [!warning] Section ${part} of ${total} is missing: ${noTextReason(e, "notes", retried)}. Create the note again to fill it in.${cappedSentence(e)}`;
 }
 
 /* Every section came back empty (or the one pass did): nothing is saved. */
-export function emptyNoteError(e: EngineError | null): EngineError {
+export function emptyNoteError(e: EngineError | null, retried = false): EngineError {
   return new EngineError(
-    `No note was saved: ${noTextReason(e, "text")}. Try again in a minute. A shorter source also helps.${cappedSentence(e)}`,
-    "truncated",
+    `No note was saved: ${noTextReason(e, "text", retried)}. Try again in a minute. A shorter source also helps.${cappedSentence(e)}`,
+    e && isIncomplete(e) ? "incomplete" : "truncated",
     e?.detail ?? { partialText: "" },
   );
 }
 
-function withNotice(fitted: Fitted): string {
+function withNotice(fitted: Fitted, where?: string): string {
   const md = stripFence(fitted.text).trim();
-  return fitted.cut ? `${closeOpenFences(md)}\n\n${cutNotice(fitted.cut)}` : md;
+  return fitted.cut ? `${closeOpenFences(md)}\n\n${cutNotice(fitted.cut, fitted.retried, where)}` : md;
+}
+
+/* The top-of-note line for one part that stopped early, or null. */
+function incompletePart(fitted: Fitted, where: string): string | null {
+  if (!fitted.cut || !isIncomplete(fitted.cut)) return null;
+  return fitted.text.trim()
+    ? `${where} stops early: ${stopReason(fitted.cut, !!fitted.retried)}.`
+    : `${where} is missing: ${stopReason(fitted.cut, !!fitted.retried)}.`;
 }
 
 /* Study tools are generated from the *notes* (like Turbo), which are far smaller
@@ -266,8 +360,10 @@ export async function generateNoteBody(
       },
       onToken,
     );
-    if (!fitted.text.trim()) throw emptyNoteError(fitted.cut);
-    return markdownToBlocks(withNotice(fitted));
+    if (!fitted.text.trim()) throw emptyNoteError(fitted.cut, !!fitted.retried);
+    const part = incompletePart(fitted, "The end of the notes");
+    const body = withNotice(fitted);
+    return markdownToBlocks(part ? `${incompleteNoteNotice([part])}\n\n${body}` : body);
   }
 
   // Large document: MAP — notes per section (sequential to respect TPM limits).
@@ -277,6 +373,8 @@ export async function generateNoteBody(
   let written = 0;
   let whole = true;
   let lastCut: EngineError | null = null;
+  let lastRetried = false;
+  const stopped: string[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const fitted = await completeToFit(engine, {
       system: noteSectionSystem(language, i + 1, chunks.length),
@@ -286,20 +384,24 @@ export async function generateNoteBody(
       maxTokens: SECTION_MAX_TOKENS,
       reasoningEffort: REASONING_EFFORT,
     });
+    const where = `Section ${i + 1} of ${chunks.length}`;
     if (fitted.cut) {
       whole = false;
       lastCut = fitted.cut;
+      lastRetried = !!fitted.retried;
     }
+    const part = incompletePart(fitted, where);
+    if (part) stopped.push(part);
     if (fitted.text.trim()) {
       written++;
-      parts.push(withNotice(fitted));
+      parts.push(withNotice(fitted, where));
       onToken?.(fitted.text);
     } else {
       whole = false;
-      parts.push(missingSectionNotice(i + 1, chunks.length, fitted.cut));
+      parts.push(missingSectionNotice(i + 1, chunks.length, fitted.cut, !!fitted.retried));
     }
   }
-  if (written === 0) throw emptyNoteError(lastCut);
+  if (written === 0) throw emptyNoteError(lastCut, lastRetried);
 
   // REDUCE — merge into one coherent note only when every section came back
   // whole and the combined notes fit a request; otherwise keep the section
@@ -307,7 +409,9 @@ export async function generateNoteBody(
   let combined = parts.join("\n\n");
   if (whole && estimateTokens(combined) <= NOTE_CHUNK_TOKENS) {
     try {
-      const merged = await engine.complete({
+      // A merge that stops early (content filter, error) gets one more try
+      // on the other tier, like every call (completeToFit).
+      const merged = await completeToFit(engine, {
         system: noteReduceSystem(language),
         messages: [{ role: "user", content: combined }],
         tier: "strong",
@@ -315,12 +419,15 @@ export async function generateNoteBody(
         maxTokens: NOTE_MAX_TOKENS,
         reasoningEffort: REASONING_EFFORT,
       });
-      // A cut or empty merge would lose notes: keep the sections instead.
-      if (merged.trim()) combined = stripFence(merged);
+      // Only a whole merge replaces the sections. A cut, stopped or empty
+      // merge would lose notes (on 2026-11-05 a filtered merge lost the end
+      // of the lecture): the whole section notes are kept instead.
+      if (!merged.cut && merged.text.trim()) combined = stripFence(merged.text);
     } catch {
-      /* keep the mapped section notes as-is (a cut merge lands here too) */
+      /* keep the mapped section notes as-is */
     }
   }
+  if (stopped.length) combined = `${incompleteNoteNotice(stopped)}\n\n${combined}`;
   return markdownToBlocks(combined);
 }
 
@@ -434,12 +541,13 @@ export async function chatAnswer(
   history: ChatTurn[],
   question: string,
   onToken?: TokenHandler,
+  onRestart?: () => void,
 ): Promise<string> {
   const messages: ChatMessage[] = [
     ...history.map((h) => ({ role: h.role, content: h.content })),
     { role: "user" as const, content: question },
   ];
-  const { text, cut } = await completeToFit(
+  const { text, cut, retried } = await completeToFit(
     engine,
     {
       system: chatSystem(note.title, studyContent(note)),
@@ -450,18 +558,21 @@ export async function chatAnswer(
       reasoningEffort: REASONING_EFFORT,
     },
     onToken,
+    onRestart,
   );
   if (!text.trim()) {
     // Never save an empty answer as if it were one.
-    const why = noTextReason(cut, "answer");
+    const why = noTextReason(cut, "answer", !!retried);
     throw new EngineError(
       `${why.charAt(0).toUpperCase()}${why.slice(1)}. Ask again, or ask a shorter question.${cappedSentence(cut)}`,
-      "truncated",
+      cut && isIncomplete(cut) ? "incomplete" : "truncated",
       cut?.detail ?? { partialText: "" },
     );
   }
   if (!cut) return text;
-  const tail = "\n\n_The answer stopped at the AI's length limit. Ask me to continue._";
+  const tail = isIncomplete(cut)
+    ? `\n\n_This answer stops early: ${stopReason(cut, !!retried)}._`
+    : "\n\n_The answer stopped at the AI's length limit. Ask me to continue._";
   onToken?.(tail);
   return `${closeOpenFences(text)}${tail}`;
 }
@@ -483,8 +594,8 @@ export async function generatePodcastScript(
       messages: [{ role: "user", content }],
       schema: podcastSchema as unknown as Record<string, unknown>,
       schemaName: "podcast",
-      tier: "strong",
-      maxTokens: STUDY_MAX_TOKENS,
+      tier: "fast",
+      maxTokens: PODCAST_MAX_TOKENS[length],
       reasoningEffort: REASONING_EFFORT,
     },
     "podcast script",

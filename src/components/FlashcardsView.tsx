@@ -14,6 +14,7 @@ import { useApp } from "../lib/app";
 import { contentFor, generateFlashcards } from "../lib/generation";
 import { bucketOf, reviewCard, studyOrder, type Rating } from "../lib/study/fsrs";
 import { EngineError } from "../lib/engine/types";
+import { renderRichInline } from "../lib/markdown";
 import type { Flashcard, Note } from "../lib/types";
 
 const RATINGS: { rating: Rating; label: string; className: string }[] = [
@@ -238,9 +239,12 @@ export default function FlashcardsView({ note }: { note: Note }) {
                   <span className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
                     {flipped ? "Answer" : "Question"}
                   </span>
-                  <p className="font-display text-xl font-semibold text-ink">
-                    {flipped ? current.back : current.front}
-                  </p>
+                  {/* Cards are written in Markdown ("**oceans**"): show it
+                      as bold, not as asterisks. Sanitized (DOMPurify). */}
+                  <p
+                    className="font-display text-xl font-semibold text-ink"
+                    dangerouslySetInnerHTML={{ __html: renderRichInline(flipped ? current.back : current.front) }}
+                  />
                   {!flipped && (
                     <p className="text-xs text-ink-faint">Click to reveal answer</p>
                   )}

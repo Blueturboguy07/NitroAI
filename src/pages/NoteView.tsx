@@ -5,7 +5,6 @@ import {
   ChevronRight,
   Download,
   FileText,
-  History,
   Layers,
   ListChecks,
   Loader2,
@@ -166,12 +165,8 @@ function EditorView({
             className="min-w-0 flex-1 bg-transparent font-display text-xl font-bold outline-none"
           />
           <div className="flex items-center gap-2">
-            <button
-              className="rounded-lg p-2 text-ink-dim hover:bg-card-hover hover:text-ink"
-              aria-label="Version history"
-            >
-              <History className="size-4.5" />
-            </button>
+            {/* The "Version history" button had no action: NitroAI keeps no
+                versions of a note, so the button is gone (round 9). */}
             <ExportMenu note={{ ...note, title }} />
             {!panelOpen && (
               <button

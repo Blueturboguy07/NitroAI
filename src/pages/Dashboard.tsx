@@ -187,7 +187,12 @@ export default function Dashboard() {
         {creationCards.map(({ source, title, subtitle, icon: Icon }) => (
           <button
             key={title}
-            onClick={() => (source === "blank" ? createBlank() : setModal(source))}
+            onClick={() => {
+              // A new action starts clean: the error of an earlier try goes.
+              setErr(null);
+              if (source === "blank") void createBlank();
+              else setModal(source);
+            }}
             className="group flex items-center gap-4 rounded-card border border-edge bg-card p-4 text-left shadow-soft transition hover:bg-card-hover"
           >
             <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-accent-softer">

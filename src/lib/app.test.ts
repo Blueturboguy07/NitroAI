@@ -56,7 +56,7 @@ describe("buildEngine", () => {
           models: { fast: "publik-fast", balanced: "publik-balanced", smart: "publik-smart" },
         });
       }
-      return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }] }), { status: 200 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "{}" }, finish_reason: "stop" }] }), { status: 200 });
     });
     vi.stubGlobal("fetch", fetchMock);
     const { buildEngine } = await import("./app");
