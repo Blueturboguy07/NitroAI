@@ -1,15 +1,10 @@
 import type { IngestResult } from "./index";
+import { titleFromFilename } from "./text";
 
 function fileName(file: File | Blob): string | undefined {
   return typeof File !== "undefined" && file instanceof File ? file.name : undefined;
 }
 
-function titleFromFilename(name: string): string {
-  return name
-    .replace(/\.[^./\\]+$/, "")
-    .trim()
-    .slice(0, 80);
-}
 
 /* Extract raw text from a .docx via mammoth. mammoth import is lazy so this
    chunk only loads when a docx is actually ingested. */
@@ -26,7 +21,10 @@ export async function ingestDocx(file: File | Blob): Promise<IngestResult> {
       meta: { filename: name },
     };
   } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Couldn't extract text from that document (${reason}).`);
+    // The library's own words ("Can't find end of central directory …",
+    // "Could not find main document part") never reach the user.
+    console.warn("NitroAI: Word reader failed", err);
+    const what = fileName(file) ? `"${fileName(file)}"` : "that Word file";
+    throw new Error(`NitroAI couldn't read the text in ${what}. The file may be damaged or not a Word .docx file. Open it in Word and save it as .docx again (File > Save As), then upload that.`);
   }
 }

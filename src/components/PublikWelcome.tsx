@@ -36,12 +36,17 @@ export default function PublikWelcomeCard({
   status,
   onLink,
   onLater,
+  opened = false,
 }: {
   /* The provision reply (starter_micros / balance_micros / claim_url). */
   status: PublikStatus;
   /* Called after claim_url was opened in the system browser. */
   onLink: () => void;
   onLater: () => void;
+  /* One press connects and links: the claim page was already opened by
+     "Continue with publik API", so the card says so and its button opens
+     the page again. */
+  opened?: boolean;
 }) {
   const claimUrl = publikUrl(status.claimUrl);
   return (
@@ -53,6 +58,11 @@ export default function PublikWelcomeCard({
       <p className="mt-3 font-display text-2xl font-bold text-ink" data-testid="publik-starter-line">
         {starterLineFor(status)}
       </p>
+      {opened && claimUrl && (
+        <p className="mt-2 text-sm font-semibold text-ink" data-testid="publik-link-opened">
+          {cta.linkOpenedLine}
+        </p>
+      )}
       <p className="mt-2 text-sm text-ink-dim">{whyItCosts}</p>
       <div className="mt-5 flex flex-wrap items-center gap-3">
         {claimUrl && (
@@ -64,7 +74,7 @@ export default function PublikWelcomeCard({
             }}
             className="inline-flex items-center gap-1.5 rounded-xl bg-accent px-5 py-2.5 font-display font-bold text-white hover:bg-accent-hover"
           >
-            {cta.linkLabel}
+            {opened ? cta.linkAgainLabel : cta.linkLabel}
             <ExternalLink className="size-3.5" />
           </button>
         )}

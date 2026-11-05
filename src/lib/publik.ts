@@ -10,6 +10,7 @@
 import { EngineError, type EngineCapabilities } from "./engine/types";
 import type { UsageHeaders } from "./engine/openai";
 import { cta, settings as copy } from "./publikCopy";
+import { localFetch } from "./localApi";
 
 export interface PublikStatus {
   /* Can publik be offered on this machine at all (a build token, a
@@ -38,7 +39,7 @@ const NO_SERVER: PublikStatus = { available: false, state: "unprovisioned", base
 
 async function call(path: string, init?: RequestInit, timeoutMs = 12_000): Promise<PublikStatus> {
   try {
-    const res = await fetch(path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    const res = await localFetch(path, { ...init, signal: AbortSignal.timeout(timeoutMs) });
     if (!(res.headers.get("content-type") ?? "").includes("application/json")) return NO_SERVER;
     return (await res.json()) as PublikStatus;
   } catch {
@@ -87,7 +88,7 @@ export interface PublikWallet {
 
 export async function fetchPublikWallet(): Promise<PublikWallet | null> {
   try {
-    const res = await fetch("/api/publik/wallet", { signal: AbortSignal.timeout(6000) });
+    const res = await localFetch("/api/publik/wallet", { signal: AbortSignal.timeout(6000) });
     if (!res.ok || !(res.headers.get("content-type") ?? "").includes("application/json")) return null;
     const w = (await res.json()) as PublikWallet;
     if (typeof w.balance_micros !== "number") return null;

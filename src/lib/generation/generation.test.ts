@@ -18,6 +18,7 @@ import {
   generateTitle,
 } from "./index";
 import { createNoteFromSources } from "./pipeline";
+import { titleSystem } from "../prompts";
 
 /* A deterministic in-memory engine: no network. Returns canned output keyed by
    the structured schemaName, and a fixed markdown doc for completions. */
@@ -30,8 +31,9 @@ class FakeEngine implements Engine {
   }
   async complete(opts: CompletionOptions, onToken?: TokenHandler): Promise<string> {
     this.completeCalls++;
-    // A tiny title vs note heuristic: short maxTokens => title.
-    if ((opts.maxTokens ?? 999) <= 40) {
+    // Title vs note: the title prompt (its cap is no longer tiny — a
+    // reasoning model needs room to think before a 6-word title).
+    if (opts.system === titleSystem) {
       onToken?.("Photosynthesis Basics");
       return "Photosynthesis Basics";
     }
@@ -154,13 +156,27 @@ describe("createNoteFromSources pipeline", () => {
     expect(note!.blocks.length).toBeGreaterThan(0);
   });
 
+  it("a .txt upload (kind text + File, as CreateNoteModal sends it) becomes a note", async () => {
+    const repo = new Repo(memoryStore());
+    const engine = new FakeEngine();
+    const file = new File(["Lecture 7: The Calvin Cycle\n\nRuBisCO fixes CO2 onto RuBP."], "lecture-7.txt");
+    const id = await createNoteFromSources({
+      repo,
+      engine,
+      inputs: [{ kind: "text", file, filename: "lecture-7.txt" }],
+    });
+    const note = await repo.getNote(id);
+    expect(note!.sourceText).toBe("Lecture 7: The Calvin Cycle\n\nRuBisCO fixes CO2 onto RuBP.");
+    expect(note!.blocks.length).toBeGreaterThan(0);
+  });
+
   it("transcribes an audio source before writing notes", async () => {
     const repo = new Repo(memoryStore());
     const engine = new FakeEngine();
     const id = await createNoteFromSources({
       repo,
       engine,
-      inputs: [{ kind: "audio", file: new Blob(["x"]), filename: "lecture.mp3" }],
+      inputs: [{ kind: "audio", file: new Blob([new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20])], { type: "audio/wav" }), filename: "lecture.wav" }],
     });
     const note = await repo.getNote(id);
     expect(note!.sourceText).toContain("transcript");

@@ -9,6 +9,7 @@ import type { Repo } from "../db";
 import type { Job, JobFile, Note, SourceKind } from "../types";
 import { uuid, now } from "../ids";
 import { ingest, type IngestInput } from "../ingest";
+import { cutTitle } from "../ingest/text";
 import { generateNoteBody, generateTitle } from "./index";
 
 export type ProgressCb = (job: Job) => void;
@@ -61,6 +62,10 @@ export async function createNoteFromSources(
   // 1. Ingest + transcribe each source, tracking per-file status.
   const texts: string[] = [];
   const metas: Record<string, string | number | undefined>[] = [];
+  /* Each read source's own name: the file name for an upload, the page or
+     video title for a link, the first line for pasted text. The note's title
+     falls back to the first one when the AI title fails or is cut. */
+  const sourceTitles: string[] = [];
   let anyOk = false;
   for (let i = 0; i < inputs.length; i++) {
     const file = job.files![i];
@@ -90,6 +95,8 @@ export async function createNoteFromSources(
       }
       texts.push(text);
       if (res.meta) metas.push(res.meta);
+      const named = res.title?.trim() || (inputs[i].filename ? stripExtension(inputs[i].filename!) : "");
+      if (named) sourceTitles.push(cutTitle(named));
       file.status = "done";
       anyOk = true;
     } catch (err) {
@@ -118,7 +125,14 @@ export async function createNoteFromSources(
   let blocks: Note["blocks"] = [];
   if (!isBlank) {
     await emit({ stage: "notes", message: "Writing your notes…", progress: 0.75 });
-    blocks = await generateNoteBody(engine, combined, language);
+    try {
+      blocks = await generateNoteBody(engine, combined, language);
+    } catch (err) {
+      // The job says why no note was saved instead of spinning until relaunch.
+      const message = err instanceof Error ? err.message : "Could not write the notes.";
+      await emit({ status: "error", message, error: message });
+      throw err;
+    }
   }
 
   // 3. Title.
@@ -128,7 +142,10 @@ export async function createNoteFromSources(
     try {
       title = await generateTitle(engine, combined);
     } catch {
-      /* keep default title */
+      /* The title call failed or was cut: name the note after its source
+         (the file name), else its first heading. Never "Untitled Document"
+         or half a title. */
+      title = sourceTitles[0] || firstHeading(blocks) || title;
     }
   }
 
@@ -165,4 +182,17 @@ export async function reconcileJobs(repo: Repo): Promise<void> {
     j.updatedAt = now();
     await repo.putJob(j);
   }
+}
+
+function stripExtension(name: string): string {
+  return name.replace(/\.[^./\\]+$/, "").trim();
+}
+
+/* The text of the note's first heading (H1 first, then H2, then H3). */
+function firstHeading(blocks: Note["blocks"]): string {
+  for (const type of ["heading1", "heading2", "heading3"] as const) {
+    const b = blocks.find((x) => x.type === type && x.text?.trim());
+    if (b) return cutTitle(b.text.replace(/\*\*|__/g, ""));
+  }
+  return "";
 }

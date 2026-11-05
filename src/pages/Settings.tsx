@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import {
   Camera,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Copy,
   Cpu,
   Download,
@@ -19,7 +21,7 @@ import {
 import { createEngine } from "../lib/engine";
 import { localSetupStatus } from "../lib/localSetup";
 import { fetchPublikStatus } from "../lib/publik";
-import { DISCLOSURE_VERSION } from "../lib/publikCopy";
+import { DISCLOSURE_VERSION, otherWays, settings as publikCopy } from "../lib/publikCopy";
 import LocalSetupModal from "../components/LocalSetupModal";
 import PublikSettings from "../components/PublikSettings";
 import { exportMarkdown, downloadText } from "../lib/export";
@@ -50,11 +52,8 @@ export default function Settings() {
   const [key, setKey] = useState("");
   /* Whether this build can offer publik API at all (a token baked in at build
      time, an existing credential, or PUBLIK_API_KEY). Forks and dev builds
-     without one never see the pill. */
+     without one never see the publik panel. */
   const [publikOffered, setPublikOffered] = useState(false);
-  /* The pill was switched to publik but prefs.mode hasn't changed yet — the
-     disclosure (or reconnect) has to be accepted first. */
-  const [publikPending, setPublikPending] = useState(false);
   const [exportMsg, setExportMsg] = useState("");
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">(
     "idle",
@@ -67,6 +66,8 @@ export default function Settings() {
   const [localModels, setLocalModels] = useState<string[]>([]);
   /* Set while a picker choice needs a download before it can become active. */
   const [pendingModel, setPendingModel] = useState<string | null>(null);
+  /* publik first: Local and "My own key" sit below publik API, closed. */
+  const [othersOpen, setOthersOpen] = useState(false);
   const provider = detectProvider(key.trim());
   const activeModel = prefs.localModel || DEFAULT_CHAT_MODEL;
 
@@ -89,14 +90,9 @@ export default function Settings() {
   }, [prefs.mode]);
 
   function setMode(mode: EngineMode) {
-    if (mode === "publik") {
-      // The panel below takes it from here: it shows the disclosure when the
-      // install isn't provisioned (or the accepted disclosure is older than
-      // the current text) and only then flips prefs.mode.
-      setPublikPending(true);
-      return;
-    }
-    setPublikPending(false);
+    // publik is switched on by its own panel (PublikSettings), which shows
+    // the disclosure first when it was never accepted; never from here.
+    if (mode === "publik") return;
     if (mode === "local") {
       // Switching to local provisions Ollama the same way onboarding does —
       // install/start/pull as needed — before the engine is used. Checked
@@ -140,7 +136,6 @@ export default function Settings() {
       if (!p) throw new Error("Key must start with sk- (OpenAI), sk-ant- (Anthropic) or pk_ (publik API).");
       await createEngine({ mode: "cloud", provider: p, apiKey: key.trim() }).validate();
       await saveApiKey(key.trim());
-      setPublikPending(false);
       savePrefs({ ...prefs, mode: "cloud" });
       setStatus("saved");
       setTimeout(() => setStatus("idle"), 2500);
@@ -149,6 +144,111 @@ export default function Settings() {
       setMsg(e instanceof Error ? e.message : "Could not validate the key.");
     }
   }
+
+  const cloudPanel = (
+    <div className="mt-5">
+      <label className="text-sm font-semibold text-ink-dim">API key</label>
+      <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-edge bg-panel px-3 py-2.5">
+        <KeyRound className="size-4 text-ink-faint" />
+        <input
+          type="password"
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="sk-… (OpenAI), sk-ant-… (Anthropic) or pk_… (publik API) — auto-detected"
+          className="w-full bg-transparent text-sm outline-none placeholder:text-ink-faint"
+        />
+        {provider && (
+          <span className="shrink-0 rounded-full bg-accent-softer px-2.5 py-1 text-xs font-bold text-accent">
+            {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : "OpenAI"}
+          </span>
+        )}
+      </div>
+      <div className="mt-3 flex items-center gap-3">
+        <button
+          onClick={saveKey}
+          disabled={status === "saving"}
+          className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60"
+        >
+          {status === "saving" ? "Validating…" : "Save & validate"}
+        </button>
+        {status === "saved" && (
+          <span className="flex items-center gap-1 text-sm font-semibold text-green-600">
+            <CheckCircle2 className="size-4" /> Saved
+          </span>
+        )}
+        {key && (
+          <button
+            onClick={async () => {
+              await clearApiKey();
+              setKey("");
+            }}
+            className="text-sm font-semibold text-ink-faint hover:text-danger-ink"
+          >
+            Remove key
+          </button>
+        )}
+      </div>
+      {status === "error" && (
+        <p className="mt-2 text-xs font-semibold text-danger-ink">{msg}</p>
+      )}
+      <p className="mt-2 text-xs text-ink-faint">
+        Stored only on this computer. One key powers every feature.
+      </p>
+    </div>
+  );
+
+  const localPanel = (
+    <div className="mt-5 rounded-xl border border-edge bg-panel p-4">
+      <p className="text-sm font-semibold">Local model</p>
+      <p className="mt-1 text-sm text-ink-faint">
+        Note generation, flashcards, quizzes, and chat run on this device
+        via Ollama. Pick any model you've already pulled, or download a
+        different one — your choice is remembered, so NitroAI won't ask
+        you to download a model again next time.
+      </p>
+
+      <label className="mt-3 block">
+        <span className="text-xs font-semibold text-ink-faint">Chat model</span>
+        <select
+          value={activeModel}
+          onChange={(e) => chooseModel(e.target.value)}
+          className="mt-1.5 w-full rounded-xl border border-edge bg-card px-3 py-2.5 text-sm outline-none focus:border-accent"
+        >
+          {localModels.filter((m) => m !== EMBED_MODEL && m !== `${EMBED_MODEL}:latest`).length > 0 && (
+            <optgroup label="Already downloaded">
+              {localModels
+                .filter((m) => m !== EMBED_MODEL && m !== `${EMBED_MODEL}:latest`)
+                .map((m) => (
+                  <option key={m} value={m}>
+                    {RECOMMENDED_MODELS.find((r) => r.id === m)?.label ?? m}
+                  </option>
+                ))}
+            </optgroup>
+          )}
+          <optgroup label="Download a model">
+            {RECOMMENDED_MODELS.filter(
+              (r) => !localModels.includes(r.id) && !localModels.includes(`${r.id}:latest`),
+            ).map((r) => (
+              <option key={r.id} value={r.id}>
+                {r.label} — {r.note}
+              </option>
+            ))}
+          </optgroup>
+        </select>
+      </label>
+      <p className="mt-2 text-xs text-ink-faint">
+        Currently using <span className="font-semibold text-ink">{activeModel}</span>.
+        Speech-to-text (Whisper) and podcast voices (Kokoro) aren't wired up
+        locally yet — those need a cloud key.
+      </p>
+      {localModels.length === 0 && (
+        <p className="mt-2 text-xs font-semibold text-danger-ink">
+          Ollama isn't reachable right now — make sure it's running, then
+          reopen Settings.
+        </p>
+      )}
+    </div>
+  );
 
   return (
     <div className="px-10 py-8">
@@ -198,151 +298,98 @@ export default function Settings() {
                 </h2>
                 <p className="mt-1 text-sm text-ink-faint">
                   {publikOffered
-                    ? "Run on publik API (pay per use, no key of your own needed), run everything locally for free, or bring your own API key."
+                    ? prefs.mode === "publik"
+                      ? publikCopy.engineIntro
+                      : prefs.mode === "cloud"
+                        ? publikCopy.engineIntroOwnKey
+                        : prefs.mode === "local"
+                          ? publikCopy.engineIntroLocal
+                          : publikCopy.engineIntroNone
                     : "Run everything locally for free, or bring your own API key for cloud-quality output."}
                 </p>
               </div>
-              <div className="flex rounded-full border border-edge bg-panel p-1">
-                {(
-                  [
-                    ...(publikOffered ? ([["publik", "publik API"]] as const) : []),
-                    ["local", "Local"],
-                    ["cloud", publikOffered ? "My own key" : "Cloud"],
-                  ] as ReadonlyArray<readonly [EngineMode, string]>
-                ).map(([k, label]) => (
-                  <button
-                    key={k}
-                    onClick={() => setMode(k)}
-                    className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
-                      (publikPending ? k === "publik" : prefs.mode === k)
-                        ? "bg-accent text-white"
-                        : "text-ink-faint hover:text-ink"
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
+              {!publikOffered && (
+                <div className="flex rounded-full border border-edge bg-panel p-1">
+                  {(
+                    [
+                      ["local", "Local"],
+                      ["cloud", "Cloud"],
+                    ] as ReadonlyArray<readonly [EngineMode, string]>
+                  ).map(([k, label]) => (
+                    <button
+                      key={k}
+                      onClick={() => setMode(k)}
+                      className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
+                        prefs.mode === k ? "bg-accent text-white" : "text-ink-faint hover:text-ink"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {publikPending || prefs.mode === "publik" ? (
-              <PublikSettings
-                engine={engine}
-                disclosureAck={prefs.publikDisclosureAck ?? 0}
-                onActivated={() => {
-                  setPublikPending(false);
-                  savePrefs({ ...prefs, mode: "publik", publikDisclosureAck: DISCLOSURE_VERSION });
-                }}
-                onOwnKey={() => {
-                  setPublikPending(false);
-                  savePrefs({ ...prefs, mode: "cloud" });
-                }}
-                onLeft={() => {
-                  setPublikPending(false);
-                  savePrefs({ ...prefs, mode: null });
-                }}
-              />
-            ) : prefs.mode === "cloud" ? (
-              <div className="mt-5">
-                <label className="text-sm font-semibold text-ink-dim">API key</label>
-                <div className="mt-1.5 flex items-center gap-2 rounded-xl border border-edge bg-panel px-3 py-2.5">
-                  <KeyRound className="size-4 text-ink-faint" />
-                  <input
-                    type="password"
-                    value={key}
-                    onChange={(e) => setKey(e.target.value)}
-                    placeholder="sk-… (OpenAI), sk-ant-… (Anthropic) or pk_… (publik API) — auto-detected"
-                    className="w-full bg-transparent text-sm outline-none placeholder:text-ink-faint"
-                  />
-                  {provider && (
-                    <span className="shrink-0 rounded-full bg-accent-softer px-2.5 py-1 text-xs font-bold text-accent">
-                      {provider === "anthropic" ? "Anthropic" : provider === "publik" ? "publik API" : "OpenAI"}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-3 flex items-center gap-3">
+            {publikOffered ? (
+              <>
+                <PublikSettings
+                  engine={engine}
+                  active={prefs.mode === "publik"}
+                  disclosureAck={prefs.publikDisclosureAck ?? 0}
+                  onActivated={() => {
+                    savePrefs({ ...prefs, mode: "publik", publikDisclosureAck: DISCLOSURE_VERSION });
+                  }}
+                  onLeft={() => {
+                    savePrefs({ ...prefs, mode: null });
+                  }}
+                />
+                <div className="mt-5 border-t border-edge pt-4">
                   <button
-                    onClick={saveKey}
-                    disabled={status === "saving"}
-                    className="rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60"
+                    type="button"
+                    onClick={() => setOthersOpen((o) => !o)}
+                    aria-expanded={othersOpen}
+                    className="inline-flex items-center gap-1 text-sm font-semibold text-ink-dim hover:text-ink"
                   >
-                    {status === "saving" ? "Validating…" : "Save & validate"}
+                    {othersOpen ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                    {otherWays.label}
                   </button>
-                  {status === "saved" && (
-                    <span className="flex items-center gap-1 text-sm font-semibold text-green-600">
-                      <CheckCircle2 className="size-4" /> Saved
-                    </span>
-                  )}
-                  {key && (
-                    <button
-                      onClick={async () => {
-                        await clearApiKey();
-                        setKey("");
-                      }}
-                      className="text-sm font-semibold text-ink-faint hover:text-danger-ink"
-                    >
-                      Remove key
-                    </button>
+                  {prefs.mode === "cloud" && <p className="mt-1 text-xs text-ink-faint">{otherWays.nowOwnKey}</p>}
+                  {prefs.mode === "local" && <p className="mt-1 text-xs text-ink-faint">{otherWays.nowLocal}</p>}
+                  {othersOpen && (
+                    <div className="mt-3" data-testid="other-ways">
+                      <div className="flex w-fit rounded-full border border-edge bg-panel p-1">
+                        {(
+                          [
+                            ["local", "Local"],
+                            ["cloud", "My own key"],
+                          ] as ReadonlyArray<readonly [EngineMode, string]>
+                        ).map(([k, label]) => (
+                          <button
+                            key={k}
+                            onClick={() => setMode(k)}
+                            className={`rounded-full px-4 py-1.5 text-sm font-semibold ${
+                              prefs.mode === k ? "bg-ink text-bg" : "text-ink-faint hover:text-ink"
+                            }`}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                      {prefs.mode !== "cloud" && prefs.mode !== "local" ? (
+                        <p className="mt-3 text-xs text-ink-faint">{otherWays.pickOne}</p>
+                      ) : prefs.mode === "cloud" ? (
+                        cloudPanel
+                      ) : (
+                        localPanel
+                      )}
+                    </div>
                   )}
                 </div>
-                {status === "error" && (
-                  <p className="mt-2 text-xs font-semibold text-danger-ink">{msg}</p>
-                )}
-                <p className="mt-2 text-xs text-ink-faint">
-                  Stored only on this computer. One key powers every feature.
-                </p>
-              </div>
+              </>
+            ) : prefs.mode === "cloud" ? (
+              cloudPanel
             ) : (
-              <div className="mt-5 rounded-xl border border-edge bg-panel p-4">
-                <p className="text-sm font-semibold">Local model</p>
-                <p className="mt-1 text-sm text-ink-faint">
-                  Note generation, flashcards, quizzes, and chat run on this device
-                  via Ollama. Pick any model you've already pulled, or download a
-                  different one — your choice is remembered, so NitroAI won't ask
-                  you to download a model again next time.
-                </p>
-
-                <label className="mt-3 block">
-                  <span className="text-xs font-semibold text-ink-faint">Chat model</span>
-                  <select
-                    value={activeModel}
-                    onChange={(e) => chooseModel(e.target.value)}
-                    className="mt-1.5 w-full rounded-xl border border-edge bg-card px-3 py-2.5 text-sm outline-none focus:border-accent"
-                  >
-                    {localModels.filter((m) => m !== EMBED_MODEL && m !== `${EMBED_MODEL}:latest`).length > 0 && (
-                      <optgroup label="Already downloaded">
-                        {localModels
-                          .filter((m) => m !== EMBED_MODEL && m !== `${EMBED_MODEL}:latest`)
-                          .map((m) => (
-                            <option key={m} value={m}>
-                              {RECOMMENDED_MODELS.find((r) => r.id === m)?.label ?? m}
-                            </option>
-                          ))}
-                      </optgroup>
-                    )}
-                    <optgroup label="Download a model">
-                      {RECOMMENDED_MODELS.filter(
-                        (r) => !localModels.includes(r.id) && !localModels.includes(`${r.id}:latest`),
-                      ).map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.label} — {r.note}
-                        </option>
-                      ))}
-                    </optgroup>
-                  </select>
-                </label>
-                <p className="mt-2 text-xs text-ink-faint">
-                  Currently using <span className="font-semibold text-ink">{activeModel}</span>.
-                  Speech-to-text (Whisper) and podcast voices (Kokoro) aren't wired up
-                  locally yet — those need a cloud key.
-                </p>
-                {localModels.length === 0 && (
-                  <p className="mt-2 text-xs font-semibold text-danger-ink">
-                    Ollama isn't reachable right now — make sure it's running, then
-                    reopen Settings.
-                  </p>
-                )}
-              </div>
+              localPanel
             )}
           </div>
 

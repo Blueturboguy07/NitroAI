@@ -1,13 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { EngineError } from "./engine/types";
 import {
   balanceLine,
   clearCreditNotice,
   creditAction,
   describeError,
+  disconnectPublik,
   dollars,
+  fetchPublikStatus,
+  fetchPublikWallet,
+  forgetPublik,
   getBalance,
   linesToCapabilities,
+  provisionPublik,
   publikUrl,
   resetBalance,
   starterIsLow,
@@ -107,5 +112,35 @@ describe("publik helpers", () => {
   it("linesToCapabilities(): no list = every line; a list narrows", () => {
     expect(linesToCapabilities(null)).toEqual({ chat: true, transcription: true, tts: true, embeddings: true });
     expect(linesToCapabilities(["chat", "audio"])).toEqual({ chat: true, transcription: true, tts: false, embeddings: false });
+  });
+});
+
+/* Round 6: the local server refuses every /api/* request without the
+   app-only header, and a POST without Content-Type application/json. */
+describe("publik calls to the local server", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("every call sends x-nitroai-app: 1; every POST sends a JSON body", async () => {
+    const seen: Array<{ path: string; method: string; app: string | null; type: string | null; body: string | null }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string, init?: RequestInit) => {
+        const h = new Headers(init?.headers);
+        seen.push({ path, method: init?.method ?? "GET", app: h.get("x-nitroai-app"), type: h.get("content-type"), body: init?.body == null ? null : String(init.body) });
+        return new Response(JSON.stringify({ available: true, state: "ready", baseUrl: "/api/publik/v1", balance_micros: 5 }), { headers: { "content-type": "application/json" } });
+      }),
+    );
+    await fetchPublikStatus();
+    await provisionPublik(1);
+    await forgetPublik();
+    await disconnectPublik();
+    await fetchPublikWallet();
+    expect(seen).toEqual([
+      { path: "/api/publik/status", method: "GET", app: "1", type: null, body: null },
+      { path: "/api/publik/provision", method: "POST", app: "1", type: "application/json", body: JSON.stringify({ disclosure_version: 1, force: false }) },
+      { path: "/api/publik/forget", method: "POST", app: "1", type: "application/json", body: "{}" },
+      { path: "/api/publik/disconnect", method: "POST", app: "1", type: "application/json", body: "{}" },
+      { path: "/api/publik/wallet", method: "GET", app: "1", type: null, body: null },
+    ]);
   });
 });

@@ -22,9 +22,11 @@ import type {
   TranscriptSegment,
   TtsOptions,
 } from "./types";
-import { EngineError } from "./types";
+import { EngineError, cappedToFrom, truncatedError } from "./types";
+import { UNREADABLE_AUDIO_MESSAGE } from "../ingest/fileTypes";
 import { unsupportedMessage, type Task } from "./router";
 import { chunkAudioForUpload, type AudioChunk, type AudioDecoder } from "../audio/chunk";
+import { APP_HEADER, isLocalApi } from "../localApi";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const ALL_CAPS: EngineCapabilities = { chat: true, transcription: true, tts: true, embeddings: true };
@@ -88,6 +90,7 @@ export class OpenAIEngine implements Engine {
       stream: true,
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...this.reasoningField(opts),
     }, opts.signal, true);
 
     if (!res.body) throw new EngineError(`${this.label()} returned an empty stream.`, "unknown");
@@ -95,6 +98,13 @@ export class OpenAIEngine implements Engine {
     const decoder = new TextDecoder();
     let buffer = "";
     let full = "";
+    /* "length" = the answer hit max_tokens. On a reasoning model the
+       thinking counts against the same cap, so the text can be cut short or
+       be empty; either way the caller must know (truncatedError). */
+    let finishReason: string | null = null;
+    /* True when the model reported reasoning: reasoning text in the stream,
+       or reasoning tokens in the last chunk's usage (publik API sends it). */
+    let reasoned = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -114,10 +124,16 @@ export class OpenAIEngine implements Engine {
             full += delta;
             onToken?.(delta);
           }
+          const finish: unknown = json.choices?.[0]?.finish_reason;
+          if (typeof finish === "string" && finish) finishReason = finish;
+          if (reportsReasoning(json.choices?.[0]?.delta, json.usage)) reasoned = true;
         } catch {
           /* malformed SSE chunk; skip it */
         }
       }
+    }
+    if (finishReason === "length") {
+      throw truncatedError(full, cappedToFrom(res.headers.get("x-publik-output-capped")), reasoned);
     }
     return full;
   }
@@ -129,6 +145,7 @@ export class OpenAIEngine implements Engine {
       stream: false,
       ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(opts.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...this.reasoningField(opts),
       response_format: {
         type: "json_schema",
         json_schema: { name: opts.schemaName, schema: opts.schema, strict: true },
@@ -137,10 +154,23 @@ export class OpenAIEngine implements Engine {
 
     const json = await res.json();
     const content = json.choices?.[0]?.message?.content;
+    // A cut-off JSON answer is not parseable; say what happened instead of
+    // letting "Unexpected end of JSON input" reach the screen.
+    if (json.choices?.[0]?.finish_reason === "length") {
+      throw truncatedError(
+        typeof content === "string" ? content : "",
+        cappedToFrom(res.headers.get("x-publik-output-capped")),
+        reportsReasoning(json.choices?.[0]?.message, json.usage),
+      );
+    }
     if (typeof content !== "string") {
       throw new EngineError(`${this.label()} returned no structured content.`, "unknown");
     }
-    return JSON.parse(content) as T;
+    try {
+      return JSON.parse(content) as T;
+    } catch {
+      throw new EngineError(`${this.label()} returned an answer that is not complete JSON. Try again.`, "unknown");
+    }
   }
 
   async transcribe(audio: Blob, signal?: AbortSignal): Promise<TranscriptResult> {
@@ -148,10 +178,17 @@ export class OpenAIEngine implements Engine {
     /* publik API sits behind a 4 MB request cap: chunk client-side. The BYO
        path keeps sending the file whole (OpenAI's own limit is 25 MB and the
        pipeline already guards at 24 MB). */
-    const chunks: AudioChunk[] =
-      this.provider === "publik"
-        ? await chunkAudioForUpload(audio, this.audioDecoder ? { decode: this.audioDecoder } : {})
-        : [{ blob: audio, filename: "audio.webm", offsetSeconds: 0 }];
+    let chunks: AudioChunk[];
+    try {
+      chunks =
+        this.provider === "publik"
+          ? await chunkAudioForUpload(audio, this.audioDecoder ? { decode: this.audioDecoder } : {})
+          : [{ blob: audio, filename: "audio.webm", offsetSeconds: 0 }];
+    } catch (err) {
+      // WebAudio's "Unable to decode audio data" never reaches the user.
+      console.warn("NitroAI: audio decode failed", err);
+      throw new EngineError(UNREADABLE_AUDIO_MESSAGE, "unsupported");
+    }
 
     const texts: string[] = [];
     const segments: TranscriptSegment[] = [];
@@ -173,7 +210,15 @@ export class OpenAIEngine implements Engine {
       } catch (err) {
         throw toNetworkError(err);
       }
-      if (!res.ok) throw await this.mapError(res);
+      if (!res.ok) {
+        const err = await this.mapError(res);
+        /* The provider's "Invalid file format. Supported formats: [...]" (or
+           "could not be decoded") becomes words. */
+        if ((res.status === 400 || res.status === 415) && /file format|supported formats|decod|unsupported|corrupt|not a valid/i.test(err.message)) {
+          throw new EngineError(UNREADABLE_AUDIO_MESSAGE, "unsupported");
+        }
+        throw err;
+      }
       this.readUsage(res, false);
 
       const json = await res.json();
@@ -270,6 +315,13 @@ export class OpenAIEngine implements Engine {
     }
   }
 
+  /* `reasoning_effort` goes to publik API only: its tiers are reasoning
+     models and the gateway forwards the field. OpenAI's own non-reasoning
+     models (gpt-4o, the BYO default) answer 400 to it. */
+  private reasoningField(opts: CompletionOptions): Record<string, string> {
+    return this.provider === "publik" && opts.reasoningEffort ? { reasoning_effort: opts.reasoningEffort } : {};
+  }
+
   private resolveModel(tier?: "fast" | "strong"): string {
     if (this.modelOverride) return this.modelOverride;
     return tier === "strong" ? this.models.strong : this.models.fast;
@@ -279,7 +331,11 @@ export class OpenAIEngine implements Engine {
      renderer — the proxy attaches it. A user-pasted pk_ key (BYO field) rides
      along as Bearer and the proxy honours it. */
   private authHeaders(): Record<string, string> {
-    return this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
+    const h: Record<string, string> = this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {};
+    // The local proxy refuses a request without the app-only header
+    // (server/localGuard.mjs). It never goes to api.openai.com.
+    if (isLocalApi(this.baseUrl)) h[APP_HEADER] = "1";
+    return h;
   }
 
   private headers(): Record<string, string> {
@@ -442,4 +498,14 @@ async function mapError(res: Response, provider: "openai" | "publik"): Promise<E
   if (res.status === 429) return new EngineError(message, "rate_limit");
   if (res.status === 403) return new EngineError(message, "model_missing");
   return new EngineError(message, "unknown");
+}
+
+/* Did the model report reasoning (thinking)? Reasoning text in a stream
+   delta or a message (`reasoning` / `reasoning_content`), or reasoning tokens
+   in `usage.completion_tokens_details`. */
+function reportsReasoning(part: unknown, usage: unknown): boolean {
+  const p = (part ?? {}) as { reasoning?: unknown; reasoning_content?: unknown };
+  if ((typeof p.reasoning === "string" && p.reasoning) || (typeof p.reasoning_content === "string" && p.reasoning_content)) return true;
+  const n = (usage as { completion_tokens_details?: { reasoning_tokens?: unknown } } | null | undefined)?.completion_tokens_details?.reasoning_tokens;
+  return typeof n === "number" && n > 0;
 }

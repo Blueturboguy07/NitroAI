@@ -306,6 +306,26 @@ describe("OpenAIEngine as the publik provider", () => {
     expect(url).toBe("/api/publik/v1/chat/completions");
     expect((init?.headers as Record<string, string>).Authorization).toBeUndefined();
     expect(JSON.parse(init?.body as string).model).toBe("publik-fast");
+    // Round 6: the local proxy refuses a request without the app header.
+    expect((init?.headers as Record<string, string>)["x-nitroai-app"]).toBe("1");
+  });
+
+  it("the app header goes to the local proxy only (relative or 127.0.0.1/localhost), never to api.openai.com", async () => {
+    const fetchMock = mockFetch(async () => jsonResponse({ object: "list", data: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    for (const baseUrl of ["/api/publik/v1", "http://127.0.0.1:41763/api/publik/v1", "http://localhost:4180/api/publik/v1"]) {
+      await new OpenAIEngine("", undefined, { provider: "publik", baseUrl }).validate();
+    }
+    await new OpenAIEngine("sk-test").validate();
+    await new OpenAIEngine("sk-test", undefined, { baseUrl: "https://evil.example/api/x" }).validate();
+    const sent = fetchMock.mock.calls.map(([u, init]) => [u, (init?.headers as Record<string, string>)["x-nitroai-app"] ?? null]);
+    expect(sent).toEqual([
+      ["/api/publik/v1/models", "1"],
+      ["http://127.0.0.1:41763/api/publik/v1/models", "1"],
+      ["http://localhost:4180/api/publik/v1/models", "1"],
+      ["https://api.openai.com/v1/models", null],
+      ["https://evil.example/api/x/models", null],
+    ]);
   });
 
   it("tier strong → publik-balanced; credential model map and a pasted pk_ key are honoured", async () => {
@@ -460,14 +480,15 @@ describe("OpenAIEngine as the publik provider", () => {
   });
 
   it("transcribe() sends small audio whole via the proxy and chunks large audio into ≤4 MB WAV pieces with shifted segments", async () => {
-    const calls: Array<{ url: string; name: string; size: number; type: string }> = [];
+    const calls: Array<{ url: string; name: string; size: number; type: string; app: string | null }> = [];
     let n = 0;
     vi.stubGlobal(
       "fetch",
       mockFetch(async (url, init) => {
         const form = init?.body as FormData;
         const f = form.get("file") as File;
-        calls.push({ url: String(url), name: f.name, size: f.size, type: String(form.get("model")) });
+        const app = (init?.headers as Record<string, string> | undefined)?.["x-nitroai-app"] ?? null;
+        calls.push({ url: String(url), name: f.name, size: f.size, type: String(form.get("model")), app });
         n++;
         return jsonResponse({ text: `part${n}`, language: "en", segments: [{ start: 0, end: 1, text: `part${n}` }] });
       }),
@@ -477,7 +498,7 @@ describe("OpenAIEngine as the publik provider", () => {
 
     const small = await engine.transcribe(new Blob([new Uint8Array(1000)]));
     expect(small.text).toBe("part1");
-    expect(calls[0]).toMatchObject({ url: "/api/publik/v1/audio/transcriptions", name: "audio.webm", size: 1000, type: "whisper-1" });
+    expect(calls[0]).toMatchObject({ url: "/api/publik/v1/audio/transcriptions", name: "audio.webm", size: 1000, type: "whisper-1", app: "1" });
 
     calls.length = 0;
     const big = await engine.transcribe(new Blob([new Uint8Array(5 * 1024 * 1024)]));

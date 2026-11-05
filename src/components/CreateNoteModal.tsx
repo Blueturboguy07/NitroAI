@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { FileAudio, FileText, Info, Link2, Upload, X } from "lucide-react";
+import { AlertCircle, FileAudio, FileText, Info, Link2, Upload, X } from "lucide-react";
 import type { IngestInput } from "../lib/ingest";
+import { DOCUMENT_ACCEPT, audioBlobProblem, documentFileProblem, documentKind } from "../lib/ingest/fileTypes";
 import { isYoutube } from "../lib/ingest/youtube";
 import type { Engine } from "../lib/engine/types";
 import { supportsTask } from "../lib/engine/router";
-import type { SourceKind } from "../lib/types";
 
 export type NoteSource = "link" | "document" | "audio";
 
@@ -14,12 +14,6 @@ const meta: Record<NoteSource, { icon: typeof Link2; iconBg: string }> = {
   audio: { icon: FileAudio, iconBg: "bg-accent" },
 };
 
-function kindForFile(name: string): SourceKind {
-  const ext = name.toLowerCase().split(".").pop();
-  if (ext === "pdf") return "pdf";
-  if (ext === "docx" || ext === "doc") return "docx";
-  return "text";
-}
 
 export default function CreateNoteModal({
   source,
@@ -39,9 +33,21 @@ export default function CreateNoteModal({
 }) {
   const [url, setUrl] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  /* Why a picked or dropped document was not added. Shown before anything is
+     sent to a model; a drop skips the file dialog's type filter, so every
+     added document is checked here. */
+  const [refused, setRefused] = useState<string[]>([]);
   const { icon: Icon, iconBg } = meta[source];
   const ready = source === "link" ? url.trim().length > 0 : files.length > 0;
   const canTranscribe = !engine || supportsTask(engine, "transcription");
+
+  async function addFiles(added: File[]) {
+    const check = source === "audio" ? (f: File) => audioBlobProblem(f, f.name) : documentFileProblem;
+    const checked = await Promise.all(added.map(async (file) => ({ file, problem: await check(file) })));
+    const ok = checked.filter((c) => !c.problem).map((c) => c.file);
+    setRefused(checked.flatMap((c) => (c.problem ? [c.problem] : [])));
+    if (ok.length) setFiles((prev) => [...prev, ...ok]);
+  }
 
   function submit() {
     if (!ready || busy) return;
@@ -50,7 +56,10 @@ export default function CreateNoteModal({
       onGenerate([{ kind: isYoutube(u) ? "youtube" : "url", url: u }]);
     } else if (source === "document") {
       onGenerate(
-        files.map((f) => ({ kind: kindForFile(f.name), file: f, filename: f.name })),
+        files.flatMap((f) => {
+          const kind = documentKind(f.name);
+          return kind ? [{ kind, file: f, filename: f.name }] : [];
+        }),
       );
     } else {
       onGenerate(files.map((f) => ({ kind: "audio", file: f, filename: f.name })));
@@ -95,12 +104,15 @@ export default function CreateNoteModal({
         )}
 
         {source === "document" && (
-          <Dropzone
-            label="Drag documents here, or click to upload"
-            accept=".pdf,.doc,.docx,.txt,.md"
-            onFiles={setFiles}
-            files={files}
-          />
+          <>
+            <Dropzone
+              label="Drag documents here, or click to upload (PDF, Word .docx, .txt, .md)"
+              accept={DOCUMENT_ACCEPT}
+              onAdd={(added) => void addFiles(added)}
+              files={files}
+            />
+            <Refused messages={refused} />
+          </>
         )}
 
         {source === "audio" && (
@@ -128,9 +140,10 @@ export default function CreateNoteModal({
             <Dropzone
               label="Drag an audio file here, or click to upload (MP3, WAV, M4A, etc.)"
               accept="audio/*,video/*"
-              onFiles={setFiles}
+              onAdd={(added) => void addFiles(added)}
               files={files}
             />
+            <Refused messages={refused} />
           </>
         )}
 
@@ -150,16 +163,34 @@ export default function CreateNoteModal({
   );
 }
 
+/* Why a picked or dropped file was not added, in words, before any call. */
+function Refused({ messages }: { messages: string[] }) {
+  if (!messages.length) return null;
+  return (
+    <div
+      role="alert"
+      className="mt-3 flex items-start gap-2 rounded-xl border border-danger-ink/30 bg-danger-soft px-3.5 py-3 text-xs font-semibold text-danger-ink"
+    >
+      <AlertCircle className="mt-0.5 size-3.5 shrink-0" />
+      <span className="flex flex-col gap-1">
+        {messages.map((m, i) => (
+          <span key={i}>{m}</span>
+        ))}
+      </span>
+    </div>
+  );
+}
+
 function Dropzone({
   label,
   accept,
   files,
-  onFiles,
+  onAdd,
 }: {
   label: string;
   accept: string;
   files: File[];
-  onFiles: (f: File[]) => void;
+  onAdd: (added: File[]) => void;
 }) {
   const [drag, setDrag] = useState(false);
 
@@ -173,7 +204,7 @@ function Dropzone({
       onDrop={(e) => {
         e.preventDefault();
         setDrag(false);
-        onFiles([...files, ...Array.from(e.dataTransfer.files)]);
+        onAdd(Array.from(e.dataTransfer.files));
       }}
       className={`flex min-h-36 cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-8 text-sm ${
         drag ? "border-accent bg-accent-softer" : "border-edge bg-panel text-ink-faint"
@@ -184,7 +215,11 @@ function Dropzone({
         multiple
         accept={accept}
         className="hidden"
-        onChange={(e) => onFiles([...files, ...Array.from(e.target.files ?? [])])}
+        onChange={(e) => {
+          onAdd(Array.from(e.target.files ?? []));
+          // The same file can be picked again after it was refused.
+          e.target.value = "";
+        }}
       />
       <span className="flex items-center gap-2">
         <Upload className="size-4" />

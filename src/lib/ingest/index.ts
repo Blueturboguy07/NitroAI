@@ -2,11 +2,12 @@
    that note generation can use as grounding context. */
 
 import type { SourceKind } from "../types";
-import { ingestText } from "./text";
+import { ingestText, ingestTextFile, titleFromFilename } from "./text";
 import { ingestUrl } from "./url";
 import { ingestYoutube } from "./youtube";
 import { ingestPdf } from "./pdf";
 import { ingestDocx } from "./docx";
+import { audioBlobProblem, checkDocument, documentKind, readSample, refusedFileMessage, type DocumentKind } from "./fileTypes";
 
 export interface IngestInput {
   kind: SourceKind;
@@ -26,11 +27,15 @@ export interface IngestResult {
   audio?: Blob;
 }
 
-function titleFromFilename(filename: string): string {
-  return filename
-    .replace(/\.[^./\\]+$/, "")
-    .trim()
-    .slice(0, 80);
+function nameOf(input: IngestInput): string | undefined {
+  return input.filename ?? (typeof File !== "undefined" && input.file instanceof File ? input.file.name : undefined);
+}
+
+/* The shared check (fileTypes.checkDocument) for a PDF or Word upload: the
+   bytes must be what the name says, before the reader library runs. */
+async function assertDocument(file: File | Blob, name: string | undefined, kind: DocumentKind): Promise<void> {
+  const { problem } = checkDocument(name, kind, file.size, await readSample(file, kind));
+  if (problem !== null) throw new Error(problem);
 }
 
 /* Fill in title/filename from the upload's filename when the format-specific
@@ -51,8 +56,18 @@ export async function ingest(input: IngestInput): Promise<IngestResult> {
     case "blank":
       return { text: "" };
 
-    case "text":
+    case "text": {
+      /* A .txt / .md upload arrives as kind "text" with the File, not the
+         text. Only .txt and .md are read as text: any other named file (a
+         .pptx, .xlsx, .zip …) is refused here, before any model call. */
+      if (input.text === undefined && input.file) {
+        const name = nameOf(input);
+        if (name !== undefined && documentKind(name) !== "text") throw new Error(await refusedFileMessage(input.file, name));
+        const result = await ingestTextFile(input.file, name);
+        return withFilenameFallback(result, input.filename);
+      }
       return ingestText(input.text ?? "");
+    }
 
     case "url": {
       if (!input.url) throw new Error("A URL is required to ingest a web page.");
@@ -66,18 +81,29 @@ export async function ingest(input: IngestInput): Promise<IngestResult> {
 
     case "pdf": {
       if (!input.file) throw new Error("A PDF file is required.");
+      await assertDocument(input.file, nameOf(input), "pdf");
       const result = await ingestPdf(input.file);
       return withFilenameFallback(result, input.filename);
     }
 
     case "docx": {
       if (!input.file) throw new Error("A DOCX file is required.");
+      const name = nameOf(input);
+      // .doc (Word 97–2003) is not a zip: the .docx reader failed with a raw JSZip error.
+      if (name !== undefined && documentKind(name) !== "docx") throw new Error(await refusedFileMessage(input.file, name));
+      await assertDocument(input.file, name, "docx");
       const result = await ingestDocx(input.file);
       return withFilenameFallback(result, input.filename);
     }
 
     case "audio": {
       const { file, filename } = input;
+      // A PDF, Office file, image, archive or text dropped on the audio
+      // window is refused here, before it is sent to be transcribed.
+      if (file) {
+        const problem = await audioBlobProblem(file, nameOf(input));
+        if (problem) throw new Error(problem);
+      }
       /* Transcription happens later via the engine — we just hand back the
          audio blob and mark the note as pending transcription. */
       return {

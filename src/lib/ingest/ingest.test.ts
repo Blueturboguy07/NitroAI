@@ -102,7 +102,7 @@ describe("ingest() routing", () => {
   });
 
   it("routes 'audio' to needsTranscription with the blob attached", async () => {
-    const blob = new Blob(["fake audio bytes"], { type: "audio/mpeg" });
+    const blob = new Blob([new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20])], { type: "audio/wav" });
     const result = await ingest({ kind: "audio", file: blob, filename: "lecture.mp3" });
     expect(result.needsTranscription).toBe(true);
     expect(result.text).toBe("");
@@ -124,5 +124,55 @@ describe("ingest() routing", () => {
 
   it("rejects 'docx' ingestion without a file", async () => {
     await expect(ingest({ kind: "docx" })).rejects.toThrow();
+  });
+});
+
+/* Every .txt / .md upload used to fail with "No readable content found.":
+   CreateNoteModal sends kind "text" with the File, and ingest() read only
+   `text`. A failed upload makes no API call, so prod data cannot show who
+   hit it. These go through ingest() exactly as the upload does. */
+describe("ingest — .txt / .md uploads", () => {
+  const upload = (parts: BlobPart[], name: string) => ingest({ kind: "text", file: new File(parts, name), filename: name });
+
+  it("reads a .txt upload's text from the file", async () => {
+    const res = await upload(["Lecture 7: The Calvin Cycle\n\nRuBisCO fixes CO2.\n"], "lecture-7.txt");
+    expect(res.text).toBe("Lecture 7: The Calvin Cycle\n\nRuBisCO fixes CO2.");
+    expect(res.title).toBe("lecture-7");
+    expect(res.meta?.filename).toBe("lecture-7.txt");
+  });
+
+  it("keeps a .md upload's markdown as it is", async () => {
+    const res = await upload(["# Week 3\n\n- **C3** plants\n- `PEP` carboxylase\n"], "week3.md");
+    expect(res.text).toBe("# Week 3\n\n- **C3** plants\n- `PEP` carboxylase");
+  });
+
+  it("drops a UTF-8 byte-order mark", async () => {
+    const res = await upload([new Uint8Array([0xef, 0xbb, 0xbf]), "Résumé of photosynthesis"], "bom.txt");
+    expect(res.text).toBe("Résumé of photosynthesis");
+  });
+
+  it("reads UTF-16 LE with a BOM (Windows Notepad 'Unicode')", async () => {
+    const s = "Stomata öffnen sich nachts";
+    const bytes = new Uint8Array(2 + s.length * 2);
+    bytes.set([0xff, 0xfe]);
+    for (let i = 0; i < s.length; i++) {
+      bytes[2 + i * 2] = s.charCodeAt(i) & 0xff;
+      bytes[3 + i * 2] = s.charCodeAt(i) >> 8;
+    }
+    expect((await upload([bytes], "notepad-unicode.txt")).text).toBe(s);
+  });
+
+  it("reads bytes that are not UTF-8 as Windows-1252 (Notepad 'ANSI'), not as replacement characters", async () => {
+    // "café – naïve" in Windows-1252: é=0xE9, en dash=0x96, ï=0xEF
+    const bytes = new Uint8Array([0x63, 0x61, 0x66, 0xe9, 0x20, 0x96, 0x20, 0x6e, 0x61, 0xef, 0x76, 0x65]);
+    expect((await upload([bytes], "ansi.txt")).text).toBe("café – naïve");
+  });
+
+  it("an empty .txt upload still reads as empty (the pipeline then says so)", async () => {
+    expect((await upload([""], "empty.txt")).text).toBe("");
+  });
+
+  it("pasted text (kind text, no file) works as before", async () => {
+    expect((await ingest({ kind: "text", text: "  pasted  " })).text).toBe("pasted");
   });
 });

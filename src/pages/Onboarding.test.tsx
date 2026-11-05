@@ -1,8 +1,11 @@
 // @vitest-environment jsdom
-/* First run with publik API as the default (R21 §4.3, contract §3.2 [S4]):
-   the publik card is preselected, the disclosure is the last step, its
-   Continue is what mints, and nothing ever lands in the user's key slot.
-   Without a build token the page is exactly the two-card page it always was. */
+/* First run with publik API first (R21 §4.3, contract §3.2 [S4]; founder
+   2026-11-02 "publik api should be front and center"): the first screen is
+   the publik disclosure with ONE primary button, its Continue is what mints
+   and (one press connects and links) opens the claim page; Local and the
+   user's own key sit below in a section that starts closed; nothing ever
+   lands in the user's key slot. Without a build token the page is exactly
+   the two-card page it always was. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -11,7 +14,11 @@ import { MemoryRouter } from "react-router-dom";
 
 const json = (body: unknown) => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
 
-function stubServer(status: Record<string, unknown>, onProvision?: (body: unknown) => Record<string, unknown>) {
+function stubServer(
+  status: Record<string, unknown>,
+  onProvision?: (body: unknown) => Record<string, unknown>,
+  wallet: () => Record<string, unknown> | null = () => null,
+) {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   vi.stubGlobal(
     "fetch",
@@ -22,12 +29,20 @@ function stubServer(status: Record<string, unknown>, onProvision?: (body: unknow
         const body = init?.body ? JSON.parse(init.body as string) : {};
         return json(onProvision ? onProvision(body) : { ok: true, minted: true, ...status, state: "ready" });
       }
+      if (url === "/api/publik/wallet") {
+        const w = wallet();
+        return w ? json(w) : new Response("not found", { status: 404 });
+      }
       if (url.startsWith("/api/local/status")) return json({ installed: false, serving: false, hasChatModel: false, hasEmbedModel: false, models: [] });
       return new Response("not found", { status: 404 });
     }),
   );
   return calls;
 }
+
+/* The buttons drawn as the primary action (filled accent). */
+const primaryButtons = (root: HTMLElement = document.body) =>
+  Array.from(root.querySelectorAll("button")).filter((b) => b.className.split(/\s+/).includes("bg-accent"));
 
 async function renderOnboarding() {
   const { AppProvider } = await import("../lib/app");
@@ -44,6 +59,8 @@ async function renderOnboarding() {
 beforeEach(() => {
   vi.resetModules();
   localStorage.clear();
+  // jsdom has no window.open; Continue opens the claim page on every mint.
+  vi.stubGlobal("open", vi.fn());
 });
 afterEach(() => {
   cleanup();
@@ -55,7 +72,7 @@ const WHY =
   "A provider charges for every request the app makes; publik pays that bill and passes it on at half the provider's list price. Nothing is charged behind your back — usage only draws from a plan or pack you choose to buy.";
 
 describe("Onboarding — first-run card after the mint (contract §12)", () => {
-  it("shows the balance from the mint reply, the justification, and a primary CTA that opens the reply's claim_url", async () => {
+  it("one press: Continue mints AND opens the reply's claim_url; the card shows the balance, the justification and 'Open the link page again'", async () => {
     // Migration 0059: a new, unlinked computer is minted at $0.00.
     const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" }, () => ({
       ok: true,
@@ -71,6 +88,10 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
 
+    // The one press already opened the claim page.
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith("https://publikhq.com/claim/HK7F-2QWD", "_blank", "noopener");
+
     const card = await screen.findByTestId("publik-welcome-card");
     // (a) balance line from the response, (b) the one sentence, (c) the primary button — in that order.
     // A $0.00 unlinked balance says what linking gives — never "$0.00 of free use".
@@ -78,19 +99,42 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
     expect(card.textContent).not.toMatch(/\$0\.00 of free|free starter/);
     expect(card).toHaveTextContent("At $0.00, publik API can't answer requests.");
     expect(card).toHaveTextContent(WHY);
-    const primary = screen.getByRole("button", { name: /^Link this computer & pick a plan/ });
+    expect(screen.getByTestId("publik-link-opened")).toHaveTextContent('publikhq.com is open in your browser. Press "Link this computer" there.');
+    const primary = screen.getByRole("button", { name: /^Open the link page again/ });
+    expect(primaryButtons(card)).toEqual([primary]);
     expect(card.textContent!.indexOf("$0.00 · link this computer")).toBeLessThan(card.textContent!.indexOf("A provider charges"));
-    expect(card.textContent!.indexOf("A provider charges")).toBeLessThan(card.textContent!.indexOf("Link this computer & pick a plan"));
+    expect(card.textContent!.indexOf("A provider charges")).toBeLessThan(card.textContent!.indexOf("Open the link page again"));
     // Copy rule (contract §1): dollars, never "credits", never "OpenAI API access".
     expect(card.textContent).not.toMatch(/\bcredits\b|OpenAI API access|ChatGPT credits/i);
-    expect(open).not.toHaveBeenCalled();
 
+    // Opening the page again does not leave the card: the app waits for the link (or "Later").
     await user.click(primary);
-    expect(open).toHaveBeenCalledTimes(1);
-    expect(open).toHaveBeenCalledWith("https://publikhq.com/claim/HK7F-2QWD", "_blank", "noopener");
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(localStorage.getItem("nitroai.prefs")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Later" }));
     await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs") ?? "{}")).toMatchObject({ mode: "publik", onboarded: true }));
     expect(calls.filter((c) => c.url === "/api/publik/provision")).toHaveLength(1);
   });
+
+  it("enters the app by itself once the wallet says this computer is linked", async () => {
+    let linked = false;
+    stubServer(
+      { available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" },
+      () => ({ ok: true, minted: true, ...READY, claimUrl: "https://publikhq.com/claim/HK7F-2QWD", starterMicros: 0 }),
+      () => ({ balance_micros: linked ? 50_000 : 0, claim_state: linked ? "claimed" : "anonymous" }),
+    );
+    vi.stubGlobal("open", vi.fn());
+    await renderOnboarding();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
+    await screen.findByTestId("publik-welcome-card");
+    expect(localStorage.getItem("nitroai.prefs")).toBeNull();
+    linked = true; // the person pressed "Link this computer" on publikhq.com
+    await waitFor(
+      () => expect(JSON.parse(localStorage.getItem("nitroai.prefs") ?? "{}")).toMatchObject({ mode: "publik", onboarded: true, publikDisclosureAck: 2 }),
+      { timeout: 8000 },
+    );
+  }, 15_000);
 
   it("a starter above $0.00 (a mint bound to an account) renders whatever amount the server sent — never a fixed figure", async () => {
     stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" }, () => ({
@@ -146,7 +190,8 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
     await user.click(await screen.findByRole("button", { name: "Continue with publik API" }));
     await user.click(await screen.findByRole("button", { name: "Later" }));
     await waitFor(() => expect(JSON.parse(localStorage.getItem("nitroai.prefs") ?? "{}")).toMatchObject({ mode: "publik", onboarded: true, publikDisclosureAck: 2 }));
-    expect(open).not.toHaveBeenCalled();
+    // Only the one press opened the claim page; "Later" opens nothing.
+    expect(open).toHaveBeenCalledTimes(1);
     expect(localStorage.getItem("nitroai.apikey")).toBe("sk-user-key-untouched");
     const urls = calls.map((c) => c.url);
     expect(urls).not.toContain("/api/publik/forget");
@@ -156,24 +201,30 @@ describe("Onboarding — first-run card after the mint (contract §12)", () => {
 });
 
 describe("Onboarding — publik API default", () => {
-  it("offers three cards with publik preselected and the disclosure; Continue mints and writes prefs, never the key slot", async () => {
+  it("the first screen is the publik disclosure with ONE primary button; Local and own key sit below, closed", async () => {
     const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1", disclosureVersion: 2 });
+    vi.stubGlobal("open", vi.fn());
     await renderOnboarding();
     const user = userEvent.setup();
 
-    expect(await screen.findByRole("button", { name: /Recommended/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Fully local/ })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Use my own key Use your OpenAI/ })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "NitroAI uses publik API" })).toBeInTheDocument();
-    // The rate sentence is on the card AND in the disclosure; the sheet adds the data-path sentence.
-    expect(screen.getAllByText(/priced per use at 50% of the model's published list price/).length).toBeGreaterThanOrEqual(2);
-    expect(screen.getAllByText(/Most people spend under \$2 a month/).length).toBeGreaterThanOrEqual(2);
+    expect(await screen.findByRole("heading", { name: "NitroAI uses publik API" })).toBeInTheDocument();
+    const cont = screen.getByRole("button", { name: "Continue with publik API" });
+    expect(primaryButtons()).toEqual([cont]);
+    expect(screen.getByText(/priced per use at 50% of the model's published list price/)).toBeInTheDocument();
     expect(screen.getByText(/never trains on them/)).toBeInTheDocument();
+    // Own key and Local are below, closed: no key field, no cards, no second button next to Continue.
+    const others = screen.getByRole("button", { name: "Other ways to run NitroAI: your own key, or fully local" });
+    expect(others).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("button", { name: "Use my own key instead" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Fully local/ })).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText("sk-... or sk-ant-...")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Get started" })).not.toBeInTheDocument();
+    // publik leads the page: the disclosure comes before the closed section.
+    expect(document.body.textContent!.indexOf("NitroAI uses publik API")).toBeLessThan(document.body.textContent!.indexOf("Other ways to run NitroAI"));
     // No mint before consent.
     expect(calls.filter((c) => c.url === "/api/publik/provision")).toHaveLength(0);
 
-    await user.click(screen.getByRole("button", { name: "Continue with publik API" }));
+    await user.click(cont);
 
     // Contract §12.1/12.4: the mint is followed by the first-run card, never
     // by a silent entry into the app.
@@ -191,12 +242,14 @@ describe("Onboarding — publik API default", () => {
     expect(localStorage.getItem("nitroai.apikey")).toBeNull();
   });
 
-  it("'Use my own key instead' reveals the key field and skips the mint entirely", async () => {
+  it("'Other ways to run NitroAI' opens the own-key field; a key there skips the mint entirely", async () => {
     const calls = stubServer({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1" });
     await renderOnboarding();
     const user = userEvent.setup();
     await screen.findByRole("button", { name: "Continue with publik API" });
-    await user.click(screen.getByRole("button", { name: "Use my own key instead" }));
+    await user.click(screen.getByRole("button", { name: "Other ways to run NitroAI: your own key, or fully local" }));
+    expect(screen.getByRole("button", { name: /Fully local/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /^Use my own key Use your OpenAI/ }));
     const input = await screen.findByPlaceholderText("sk-... or sk-ant-...");
     await user.type(input, "sk-my-own");
     await user.click(screen.getByRole("button", { name: "Get started" }));

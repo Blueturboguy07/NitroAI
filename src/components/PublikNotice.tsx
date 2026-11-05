@@ -34,9 +34,12 @@ export function ErrorNotice({ err, compact = false }: { err: ShownError | null; 
 }
 
 /* The two-sentence disclosure. Shown once per install, before the first
-   gateway call — as the last step of the app's own onboarding, and again in
-   Settings if the user picks publik there before ever accepting it. Two
-   buttons, primary first, no third "later". "Continue" is what mints. */
+   gateway call — as the first screen of the app's own onboarding, and again
+   in Settings if the user picks publik there before ever accepting it.
+   ONE primary button, "Continue", which mints. publik first (founder,
+   2026-11-02): the own-key choice is not a second button here; onboarding
+   and Settings offer it below, in a section that starts closed. `onOwnKey`
+   is kept for any surface that still wants the inline link. */
 export function PublikDisclosure({
   onContinue,
   onOwnKey,
@@ -44,7 +47,7 @@ export function PublikDisclosure({
   error,
 }: {
   onContinue: () => void;
-  onOwnKey: () => void;
+  onOwnKey?: () => void;
   busy?: boolean;
   error?: string | null;
 }) {
@@ -71,14 +74,16 @@ export function PublikDisclosure({
         >
           {busy ? "Setting up…" : disclosure.continueLabel}
         </button>
-        <button
-          type="button"
-          onClick={onOwnKey}
-          disabled={busy}
-          className="rounded-xl border border-edge bg-panel px-5 py-2.5 font-display font-bold text-ink-dim hover:text-ink disabled:opacity-60"
-        >
-          {disclosure.ownKeyLabel}
-        </button>
+        {onOwnKey && (
+          <button
+            type="button"
+            onClick={onOwnKey}
+            disabled={busy}
+            className="rounded-xl border border-edge bg-panel px-5 py-2.5 font-display font-bold text-ink-dim hover:text-ink disabled:opacity-60"
+          >
+            {disclosure.ownKeyLabel}
+          </button>
+        )}
       </div>
       <p className="mt-3 text-xs text-ink-faint">
         {disclosure.termsPrefix}{" "}

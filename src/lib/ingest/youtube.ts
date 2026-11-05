@@ -1,4 +1,6 @@
 import type { IngestResult } from "./index";
+import { localFetch } from "../localApi";
+import { withScheme } from "./link";
 
 const ID_RE = /^[A-Za-z0-9_-]{11}$/;
 
@@ -146,7 +148,7 @@ async function ingestYoutubeDesktop(url: string): Promise<IngestResult> {
 async function ingestViaLocalServer(url: string): Promise<IngestResult | null> {
   let res: Response;
   try {
-    res = await fetch(`/api/youtube-extract?url=${encodeURIComponent(url)}`);
+    res = await localFetch("/api/youtube-extract", { method: "POST", body: JSON.stringify({ url }) });
   } catch {
     return null;
   }
@@ -163,10 +165,13 @@ async function ingestViaLocalServer(url: string): Promise<IngestResult | null> {
    Whisper). In a plain browser, YouTube's 2026 bot-gating makes caption fetches
    return empty, so after a best-effort attempt we fail with an honest, actionable
    message rather than silently producing nothing. */
-export async function ingestYoutube(url: string): Promise<IngestResult> {
+export async function ingestYoutube(typed: string): Promise<IngestResult> {
+  // "youtu.be/jNQXAC9IVRw" means https://youtu.be/jNQXAC9IVRw. The local
+  // server accepts only a full http(s) YouTube link.
+  const url = withScheme(typed);
   const id = youtubeId(url);
   if (!id) {
-    throw new Error(`"${url}" doesn't look like a YouTube URL.`);
+    throw new Error(`"${typed}" doesn't look like a YouTube URL.`);
   }
 
   if (inTauri()) {

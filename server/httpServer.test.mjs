@@ -97,6 +97,21 @@ let file;
 let app;
 let base;
 
+/* What the renderer sends (src/lib/localApi.ts): the app-only header, and
+   a JSON content type on a body that is not FormData. The guard
+   (localGuard.mjs) refuses a request without them. */
+function api(url, init = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("x-nitroai-app", "1");
+  const method = (init.method ?? "GET").toUpperCase();
+  let body = init.body;
+  if (method !== "GET" && method !== "HEAD") {
+    if (body === undefined) body = "{}";
+    if (!(body instanceof FormData) && !headers.has("content-type")) headers.set("content-type", "application/json");
+  }
+  return fetch(url, { ...init, method, headers, body });
+}
+
 async function boot(publik = {}) {
   app = await startServer({
     distDir: path.join(dir, "dist"),
@@ -124,22 +139,22 @@ afterEach(async () => {
 describe("publik routes", () => {
   it("status → unprovisioned but available when a token exists; never available without one", async () => {
     await boot();
-    const s = await (await fetch(`${base}/api/publik/status`)).json();
+    const s = await (await api(`${base}/api/publik/status`)).json();
     expect(s).toMatchObject({ available: true, state: "unprovisioned", baseUrl: "/api/publik/v1", disclosureVersion: DISCLOSURE_VERSION });
     await new Promise((r) => app.server.close(r));
     await boot({ token: null });
-    const s2 = await (await fetch(`${base}/api/publik/status`)).json();
+    const s2 = await (await api(`${base}/api/publik/status`)).json();
     expect(s2).toMatchObject({ available: false, state: "unprovisioned" });
   });
 
   it("nothing is minted on status/boot; provision mints only when called (consent first)", async () => {
     await boot();
-    await fetch(`${base}/api/publik/status`);
-    await fetch(`${base}/api/publik/wallet`);
+    await api(`${base}/api/publik/status`);
+    await api(`${base}/api/publik/wallet`);
     expect(gateway.requests.filter((r) => r.url === "/installs")).toHaveLength(0);
     expect(fs.existsSync(file)).toBe(false);
 
-    const res = await fetch(`${base}/api/publik/provision`, {
+    const res = await api(`${base}/api/publik/provision`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ disclosure_version: DISCLOSURE_VERSION }),
@@ -153,14 +168,14 @@ describe("publik routes", () => {
 
   it("provision without a token answers 200 {ok:false, reason:no_app_token}", async () => {
     await boot({ token: null });
-    const s = await (await fetch(`${base}/api/publik/provision`, { method: "POST" })).json();
+    const s = await (await api(`${base}/api/publik/provision`, { method: "POST" })).json();
     expect(s).toMatchObject({ ok: false, reason: "no_app_token", available: false });
   });
 
   it("proxy: chat streams through with the key attached and x-publik-* headers exposed", async () => {
     await boot();
-    await fetch(`${base}/api/publik/provision`, { method: "POST" });
-    const res = await fetch(`${base}/api/publik/chat`, {
+    await api(`${base}/api/publik/provision`, { method: "POST" });
+    const res = await api(`${base}/api/publik/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ model: "publik-fast", messages: [{ role: "user", content: "hi" }], stream: true }),
@@ -181,28 +196,28 @@ describe("publik routes", () => {
 
   it("proxy: /api/publik/v1/<path> covers transcription (multipart), speech, embeddings, models; others 404", async () => {
     await boot();
-    await fetch(`${base}/api/publik/provision`, { method: "POST" });
+    await api(`${base}/api/publik/provision`, { method: "POST" });
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(1000)]), "chunk.wav");
     form.append("model", "whisper-1");
-    const t = await fetch(`${base}/api/publik/v1/audio/transcriptions`, { method: "POST", body: form });
+    const t = await api(`${base}/api/publik/v1/audio/transcriptions`, { method: "POST", body: form });
     expect(t.status).toBe(200);
     expect(t.headers.get("x-publik-charge-micros")).toBe("150");
     const tb = await t.json();
     expect(tb.content_type).toMatch(/^multipart\/form-data; boundary=/);
     expect(tb.echoed_bytes).toBeGreaterThan(1000);
 
-    expect((await fetch(`${base}/api/publik/v1/embeddings`, { method: "POST", body: "{}" })).status).toBe(200);
-    expect((await fetch(`${base}/api/publik/v1/audio/speech`, { method: "POST", body: "{}" })).status).toBe(200);
-    expect((await fetch(`${base}/api/publik/v1/models`)).status).toBe(200);
-    expect((await fetch(`${base}/api/publik/v1/installs`, { method: "POST", body: "{}" })).status).toBe(404);
-    expect((await fetch(`${base}/api/publik/v1/wallet`)).status).toBe(404);
-    expect((await fetch(`${base}/api/publik/v1/chat/completions`)).status).toBe(404); // GET not allowed
+    expect((await api(`${base}/api/publik/v1/embeddings`, { method: "POST", body: "{}" })).status).toBe(200);
+    expect((await api(`${base}/api/publik/v1/audio/speech`, { method: "POST", body: "{}" })).status).toBe(200);
+    expect((await api(`${base}/api/publik/v1/models`)).status).toBe(200);
+    expect((await api(`${base}/api/publik/v1/installs`, { method: "POST", body: "{}" })).status).toBe(404);
+    expect((await api(`${base}/api/publik/v1/wallet`)).status).toBe(404);
+    expect((await api(`${base}/api/publik/v1/chat/completions`)).status).toBe(404); // GET not allowed
   });
 
   it("proxy: without a credential answers 401 no_publik_credential and never calls the gateway", async () => {
     await boot();
-    const res = await fetch(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
+    const res = await api(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
     expect(res.status).toBe(401);
     expect((await res.json()).error.type).toBe("no_publik_credential");
     expect(gateway.requests).toHaveLength(0);
@@ -210,18 +225,18 @@ describe("publik routes", () => {
 
   it("proxy: a user-pasted pk_ key in Authorization is used instead of the machine credential", async () => {
     await boot();
-    await fetch(`${base}/api/publik/provision`, { method: "POST" });
-    await fetch(`${base}/api/publik/chat`, { method: "POST", headers: { authorization: `Bearer ${USER_KEY}` }, body: "{}" });
+    await api(`${base}/api/publik/provision`, { method: "POST" });
+    await api(`${base}/api/publik/chat`, { method: "POST", headers: { authorization: `Bearer ${USER_KEY}` }, body: "{}" });
     expect(gateway.requests.at(-1).headers.authorization).toBe(`Bearer ${USER_KEY}`);
     // a non-pk_ bearer is ignored, the machine credential is used
-    await fetch(`${base}/api/publik/chat`, { method: "POST", headers: { authorization: "Bearer sk-user" }, body: "{}" });
+    await api(`${base}/api/publik/chat`, { method: "POST", headers: { authorization: "Bearer sk-user" }, body: "{}" });
     expect(gateway.requests.at(-1).headers.authorization).toBe(`Bearer ${KEY}`);
   });
 
   it("proxy: bodies over 4 MB are refused locally with 413", async () => {
     await boot();
-    await fetch(`${base}/api/publik/provision`, { method: "POST" });
-    const res = await fetch(`${base}/api/publik/v1/audio/transcriptions`, {
+    await api(`${base}/api/publik/provision`, { method: "POST" });
+    const res = await api(`${base}/api/publik/v1/audio/transcriptions`, {
       method: "POST",
       body: new Uint8Array(4 * 1024 * 1024 + 1),
     }).catch(() => null);
@@ -235,7 +250,7 @@ describe("publik routes", () => {
 
   it("402 passes through untouched (body + headers) so the renderer can render message + top_up_url", async () => {
     await boot();
-    await fetch(`${base}/api/publik/provision`, { method: "POST" });
+    await api(`${base}/api/publik/provision`, { method: "POST" });
     gateway.route = (req, res, raw) => {
       if (req.url !== "/chat/completions") return defaultRoute(req, res, raw);
       res.writeHead(402, { "content-type": "application/json", "x-publik-balance": "1240" });
@@ -254,7 +269,7 @@ describe("publik routes", () => {
         }),
       );
     };
-    const res = await fetch(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
+    const res = await api(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
     expect(res.status).toBe(402);
     expect(res.headers.get("x-publik-balance")).toBe("1240");
     const body = await res.json();
@@ -263,7 +278,7 @@ describe("publik routes", () => {
 
   it("401 key_revoked reprovision:true → re-mints with the SAME install_id and retries once", async () => {
     await boot();
-    await fetch(`${base}/api/publik/provision`, { method: "POST" });
+    await api(`${base}/api/publik/provision`, { method: "POST" });
     const id = readCredentialFile(file).install_id;
     let chatCalls = 0;
     gateway.route = (req, res, raw) => {
@@ -284,7 +299,7 @@ describe("publik routes", () => {
       }
       return defaultRoute(req, res, raw);
     };
-    const res = await fetch(`${base}/api/publik/chat`, { method: "POST", body: JSON.stringify({ messages: [] }) });
+    const res = await api(`${base}/api/publik/chat`, { method: "POST", body: JSON.stringify({ messages: [] }) });
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("Hello");
     expect(chatCalls).toBe(2);
@@ -296,7 +311,7 @@ describe("publik routes", () => {
 
   it("401 key_revoked reprovision:false → marks disconnected, does NOT re-mint, later calls 401 without the gateway", async () => {
     await boot();
-    await fetch(`${base}/api/publik/provision`, { method: "POST" });
+    await api(`${base}/api/publik/provision`, { method: "POST" });
     gateway.route = (req, res, raw) => {
       if (req.url === "/chat/completions") {
         res.writeHead(401, { "content-type": "application/json" });
@@ -305,39 +320,39 @@ describe("publik routes", () => {
       }
       return defaultRoute(req, res, raw);
     };
-    const res = await fetch(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
+    const res = await api(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
     expect(res.status).toBe(401);
     expect((await res.json()).error).toMatchObject({ type: "key_revoked", reprovision: false, disconnected: true });
     expect(readCredentialFile(file)).toMatchObject({ disconnected: true });
     expect(gateway.requests.filter((r) => r.url === "/installs")).toHaveLength(1);
 
-    const s = await (await fetch(`${base}/api/publik/status`)).json();
+    const s = await (await api(`${base}/api/publik/status`)).json();
     expect(s.state).toBe("disconnected");
     const n = gateway.requests.length;
-    const again = await fetch(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
+    const again = await api(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
     expect(again.status).toBe(401);
     expect((await again.json()).error.disconnected).toBe(true);
     expect(gateway.requests).toHaveLength(n);
 
     // Reconnect is explicit: provision {force:true} starts a fresh install.
     gateway.route = defaultRoute;
-    const r = await (await fetch(`${base}/api/publik/provision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ force: true }) })).json();
+    const r = await (await api(`${base}/api/publik/provision`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ force: true }) })).json();
     expect(r).toMatchObject({ ok: true, minted: true, state: "ready" });
   });
 
   it("wallet falls back to GET /wallet; forget and disconnect drop the file", async () => {
     await boot();
-    expect((await fetch(`${base}/api/publik/wallet`)).status).toBe(404);
-    await fetch(`${base}/api/publik/provision`, { method: "POST" });
-    const w = await (await fetch(`${base}/api/publik/wallet`)).json();
+    expect((await api(`${base}/api/publik/wallet`)).status).toBe(404);
+    await api(`${base}/api/publik/provision`, { method: "POST" });
+    const w = await (await api(`${base}/api/publik/wallet`)).json();
     expect(w.balance_micros).toBe(181240);
     expect(gateway.requests.at(-1).headers.authorization).toBe(`Bearer ${KEY}`);
 
-    await fetch(`${base}/api/publik/forget`, { method: "POST" });
+    await api(`${base}/api/publik/forget`, { method: "POST" });
     expect(fs.existsSync(file)).toBe(false);
-    expect((await (await fetch(`${base}/api/publik/status`)).json()).state).toBe("unprovisioned");
+    expect((await (await api(`${base}/api/publik/status`)).json()).state).toBe("unprovisioned");
 
-    await fetch(`${base}/api/publik/provision`, { method: "POST" });
+    await api(`${base}/api/publik/provision`, { method: "POST" });
     gateway.route = (req, res, raw) => {
       if (req.url === "/installs/revoke") {
         res.writeHead(204);
@@ -346,7 +361,7 @@ describe("publik routes", () => {
       }
       return defaultRoute(req, res, raw);
     };
-    await fetch(`${base}/api/publik/disconnect`, { method: "POST" });
+    await api(`${base}/api/publik/disconnect`, { method: "POST" });
     expect(gateway.requests.at(-1)).toMatchObject({ url: "/installs/revoke", method: "POST" });
     expect(fs.existsSync(file)).toBe(false);
   });
@@ -356,9 +371,9 @@ describe("publik routes", () => {
     process.env.PUBLIK_API_BASE_URL = gateway.url;
     try {
       await boot({ token: null });
-      const s = await (await fetch(`${base}/api/publik/status`)).json();
+      const s = await (await api(`${base}/api/publik/status`)).json();
       expect(s).toMatchObject({ available: true, state: "ready", source: "env" });
-      await fetch(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
+      await api(`${base}/api/publik/chat`, { method: "POST", body: "{}" });
       expect(gateway.requests.at(-1).headers.authorization).toBe(`Bearer ${USER_KEY}`);
       expect(fs.existsSync(file)).toBe(false);
     } finally {
@@ -371,9 +386,9 @@ describe("publik routes", () => {
 describe("server basics", () => {
   it("unknown /api/x is still 404 and /api/health still answers", async () => {
     await boot();
-    expect((await fetch(`${base}/api/x`)).status).toBe(404);
-    expect((await (await fetch(`${base}/api/health`)).json()).ok).toBe(true);
-    expect((await fetch(`${base}/api/publik/nope`)).status).toBe(404);
+    expect((await api(`${base}/api/x`)).status).toBe(404);
+    expect((await (await api(`${base}/api/health`)).json()).ok).toBe(true);
+    expect((await api(`${base}/api/publik/nope`)).status).toBe(404);
   });
 
   it("ports: falls through a taken candidate to the next one", async () => {

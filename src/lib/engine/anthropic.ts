@@ -16,7 +16,7 @@ import type {
   TranscriptResult,
   TtsOptions,
 } from "./types";
-import { EngineError } from "./types";
+import { EngineError, truncatedError } from "./types";
 
 const BASE_URL = "https://api.anthropic.com/v1";
 const API_VERSION = "2023-06-01";
@@ -63,6 +63,8 @@ export class AnthropicEngine implements Engine {
     const decoder = new TextDecoder();
     let buffer = "";
     let full = "";
+    let stopReason: string | null = null;
+    let reasoned = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -84,11 +86,16 @@ export class AnthropicEngine implements Engine {
               onToken?.(text);
             }
           }
+          if (json.type === "content_block_delta" && json.delta?.type === "thinking_delta") reasoned = true;
+          if (json.type === "message_delta" && typeof json.delta?.stop_reason === "string") {
+            stopReason = json.delta.stop_reason;
+          }
         } catch {
           /* malformed SSE chunk; skip it */
         }
       }
     }
+    if (stopReason === "max_tokens") throw truncatedError(full, undefined, reasoned);
     return full;
   }
 
@@ -112,6 +119,11 @@ export class AnthropicEngine implements Engine {
     }, opts.signal);
 
     const json = await res.json();
+    // A tool call cut at max_tokens carries an incomplete input object.
+    if (json.stop_reason === "max_tokens") {
+      const thought = (json.content ?? []).some((b: { type?: string }) => b.type === "thinking");
+      throw truncatedError("", undefined, thought);
+    }
     const blocks: Array<{ type: string; name?: string; input?: unknown }> = json.content ?? [];
     const block = blocks.find((b) => b.type === "tool_use" && b.name === toolName);
     if (!block) {
