@@ -15,6 +15,10 @@ on:
 permissions:
   contents: write
 
+# publik telemetry is off on build machines: a test run is not a user.
+env:
+  DO_NOT_TRACK: "1"
+
 jobs:
   # A release that already holds files for this tag must never be overwritten.
   # That is the case when a draft release with checked, notarized installers is
