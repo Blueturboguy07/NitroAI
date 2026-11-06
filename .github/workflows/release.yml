@@ -16,7 +16,42 @@ permissions:
   contents: write
 
 jobs:
+  # A release that already holds files for this tag must never be overwritten.
+  # That is the case when a draft release with checked, notarized installers is
+  # published: publishing creates the tag, the tag starts this workflow, and
+  # the upload below would replace the checked files with fresh, unchecked
+  # ones. So: files already there for the tag → build nothing, upload nothing.
+  # A plain `git push --tags` with no release yet builds and publishes as before.
+  # If the check itself fails, the jobs below do not run.
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "Not a tag: build only (no release is published from a branch)."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$GITHUB_REF_NAME\") | .assets | length" \
+            | awk '{ total += $1 } END { print total + 0 }')"
+          if [ "$files" -gt 0 ]; then
+            echo "::notice::A release for $GITHUB_REF_NAME already holds $files file(s). Nothing is built and nothing is uploaded."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "No release files for $GITHUB_REF_NAME yet: building."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: guard
+    if: needs.guard.outputs.build == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -145,8 +180,8 @@ jobs:
           if-no-files-found: warn
 
   release:
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: [guard, build]
+    if: startsWith(github.ref, 'refs/tags/') && needs.guard.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

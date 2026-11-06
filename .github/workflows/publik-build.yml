@@ -1,0 +1,254 @@
+name: publik build
+
+# Builds the installers of a publik telemetry release (Mac .dmg for arm64 and
+# x64, Windows .exe, Linux .AppImage) with the same commands as release.yml
+# and uploads them as workflow artifacts.
+#
+# It NEVER creates, changes or publishes a GitHub Release. The files are
+# downloaded, checked on a Mac (signature, notarization ticket, a real
+# launch) and attached to a draft release by hand.
+
+on:
+  push:
+    branches:
+      - "telemetry/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publik-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac:
+    runs-on: macos-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Same keychain set-up as release.yml, with one difference: a missing
+      # certificate stops this build (a publik release is never ad-hoc signed).
+      - name: Set up macOS code signing
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CSC_LINK:-}" ]; then
+            echo "::error::CSC_LINK is not set: this build must be signed."
+            exit 1
+          fi
+          KEYCHAIN="$RUNNER_TEMP/nitroai-signing.keychain-db"
+          KPW="$(openssl rand -base64 24)"
+          security create-keychain -p "$KPW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KPW" "$KEYCHAIN"
+          echo "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          security import build-resources/apple-developer-id-intermediates.pem -k "$KEYCHAIN" || true
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KPW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed 's/"//g')
+          rm -f "$RUNNER_TEMP/cert.p12"
+          IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN" | awk '/Developer ID Application/ {print $2; exit}')"
+          if [ -z "$IDENTITY" ]; then
+            echo "::error::No Developer ID Application identity in the signing keychain."
+            exit 1
+          fi
+          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+          echo "MAC_SIGN=1" >> "$GITHUB_ENV"
+          echo "DMG_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Check publik app token
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if [ -z "${PUBLIK_APP_TOKEN:-}" ]; then
+            echo "::error::PUBLIK_APP_TOKEN is not set: the build would ship without publik API."
+            exit 1
+          fi
+          echo "publik app token present (not printed)."
+
+      # electron-builder signs each app with the hardened runtime, notarizes it
+      # and staples the ticket to the .app before it builds the dmg.
+      - name: Build, sign and notarize the apps
+        run: npm run dist:mac
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Check the stapled apps
+        run: |
+          set -euo pipefail
+          for app in release/mac-arm64/NitroAI.app release/mac/NitroAI.app; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            xcrun stapler validate "$app"
+            spctl -a -t exec -vv "$app" || echo "::warning::spctl did not accept $app on this runner"
+          done
+
+      # The dmg itself is signed, then notarized, then stapled, so that the
+      # download opens with no network (a dmg with no ticket reads "damaged").
+      - name: Sign, notarize and staple the dmgs
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          count=0
+          for dmg in release/*.dmg; do
+            count=$((count + 1))
+            signed=0
+            for try in 1 2 3 4; do
+              if codesign --force --sign "$DMG_SIGN_IDENTITY" --keychain "$CSC_KEYCHAIN" --timestamp "$dmg"; then
+                signed=1
+                break
+              fi
+              echo "codesign failed (try $try), waiting 30 seconds"
+              sleep 30
+            done
+            [ "$signed" = 1 ]
+            codesign --verify --strict --verbose=2 "$dmg"
+            echo "notarizing $dmg"
+            xcrun notarytool submit "$dmg" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" --wait
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
+            spctl -a -t open --context context:primary-signature -vv "$dmg" || echo "::warning::spctl did not accept $dmg on this runner"
+            shasum -a 256 "$dmg"
+          done
+          [ "$count" = 2 ]
+
+      - name: Upload the dmgs as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nitroai-macos
+          path: release/*.dmg
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check publik app token
+        shell: bash
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if [ -z "${PUBLIK_APP_TOKEN:-}" ]; then
+            echo "::error::PUBLIK_APP_TOKEN is not set: the build would ship without publik API."
+            exit 1
+          fi
+          echo "publik app token present (not printed)."
+
+      # Unsigned: there is no Windows certificate (same as every release so far).
+      - name: Build installer
+        run: npm run dist:win
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+
+      - name: Upload the installer as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nitroai-windows
+          path: release/*.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      # Installs the real installer silently, starts the installed app against
+      # a listener on this runner and fails when no correct app_opened arrives.
+      - name: Telemetry test of the installed app
+        shell: pwsh
+        run: |
+          $installer = (Resolve-Path "release\NitroAI-Setup-Windows.exe").Path
+          $proc = Start-Process -FilePath $installer -ArgumentList "/S" -Wait -PassThru
+          Write-Host "silent install exit code: $($proc.ExitCode)"
+          $roots = @("$env:LOCALAPPDATA\Programs", "$env:ProgramFiles") | Where-Object { Test-Path $_ }
+          $exe = Get-ChildItem -Path $roots -Filter "NitroAI.exe" -Recurse -Depth 2 -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($exe) {
+            Write-Host "installed app: $($exe.FullName)"
+            $target = $exe.FullName
+          } else {
+            Write-Host "::warning::NitroAI.exe was not found after the silent install. Testing release\win-unpacked instead."
+            $target = (Resolve-Path "release\win-unpacked\NitroAI.exe").Path
+          }
+          node .github/scripts/publik-telemetry-smoke.cjs "$target"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check publik app token
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+        run: |
+          if [ -z "${PUBLIK_APP_TOKEN:-}" ]; then
+            echo "::error::PUBLIK_APP_TOKEN is not set: the build would ship without publik API."
+            exit 1
+          fi
+          echo "publik app token present (not printed)."
+
+      - name: Build installer
+        run: npm run dist:linux
+        env:
+          PUBLIK_APP_TOKEN: ${{ secrets.PUBLIK_APP_TOKEN }}
+
+      - name: Upload the AppImage as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nitroai-linux
+          path: release/*.AppImage
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      # Best effort: a runner has no screen and no FUSE, so the AppImage runs
+      # unpacked under a virtual display. A failure here does not fail the job.
+      - name: Telemetry test of the AppImage (best effort)
+        continue-on-error: true
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -euo pipefail
+          command -v xvfb-run >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq xvfb; }
+          chmod +x release/NitroAI-Linux-x86_64.AppImage
+          xvfb-run -a node .github/scripts/publik-telemetry-smoke.cjs "$PWD/release/NitroAI-Linux-x86_64.AppImage" --no-sandbox
