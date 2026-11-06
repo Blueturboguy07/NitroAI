@@ -25,7 +25,7 @@
 
 ---
 
-NitroAI is an open-source, local-first study app. Point it at a document, a website, a YouTube link, or an audio file and it generates clean notes (with math), spaced-repetition flashcards, quizzes, and a chat that knows your material. Out of the box it runs on **publik API** — pay per use, no key of your own needed; linking the computer to your publik account gives $0.05 of free use, once. You can also run it **fully locally** (no account, no cloud, nothing leaves your machine) or **bring your own** OpenAI / Anthropic key. There is no NitroAI subscription: publik API is pay-per-use, your own key is billed by your provider, and local is free.
+NitroAI is an open-source, local-first study app. Point it at a document, a website, a YouTube link, or an audio file and it generates clean notes (with math), spaced-repetition flashcards, quizzes, and a chat that knows your material. Out of the box it runs on **publik API** — pay per use, no key of your own needed; linking the computer to your publik account gives $0.05 of free use, once. You can also run it **fully locally** (no account, no cloud, your study material never leaves your machine) or **bring your own** OpenAI / Anthropic key. There is no NitroAI subscription: publik API is pay-per-use, your own key is billed by your provider, and local is free.
 
 > [!IMPORTANT]
 > **This is a starting point, not a finished product.** It's an open-source foundation meant to be forked, extended, and improved. It works and it's genuinely useful, but expect rough edges — treat it as a solid base to build on rather than a polished commercial app.
@@ -57,6 +57,13 @@ You pick one on first launch (and can switch any time in Settings):
 - **Use my own key** — paste an OpenAI (`sk-…`), Anthropic (`sk-ant-…`) or publik (`pk_…`) key for the highest-quality notes, quizzes, chat, and podcast voices. The key is stored only on this computer and used only to call your provider directly. A key you enter yourself is never overwritten by the publik setup.
 
 Your notes and generated content live only on your machine (in the app's local database); you can export everything from Settings at any time.
+
+## Usage counts
+
+The packaged app sends two usage events to publik: `app_opened` at each launch and `active_session` every 30 minutes while it runs. This happens in every mode, fully local included.
+Each event holds the app name, the app version, the operating system, the CPU type and a random install ID, so a computer without publik API is counted anonymously. On a computer that is set up for publik API, the event also carries that install's publik key: publik then links the count to the install and, if you linked one, to your publik account.
+It never holds your notes, prompts, file names or your own provider keys.
+To turn it off, set `DO_NOT_TRACK=1` (or `PUBLIK_TELEMETRY=0`) in the environment before you start NitroAI. Details: <https://publikhq.com/skills/telemetry.md>.
 
 ## For developers
 
@@ -100,6 +107,7 @@ server/         the local server the desktop shell runs
   ytdlp.mjs       yt-dlp download + caption/audio extraction
   ollama.mjs      Ollama install / serve / model-pull lifecycle
 electron/       the desktop shell (starts the server, opens the window)
+  publik-telemetry.cjs  publik usage counts client (see Usage counts)
 ```
 
 ## Signing your own builds
@@ -133,7 +141,7 @@ Then cut a release: `git tag v0.1.3 && git push --tags`. That's it — nothing e
 
 ## Tech
 
-React 19 · Vite · Tailwind · Electron shell · publik API (default) · Ollama (local) · OpenAI / Anthropic (your own key) · KaTeX · FSRS spaced repetition. No backend of its own, no telemetry, no account required.
+React 19 · Vite · Tailwind · Electron shell · publik API (default) · Ollama (local) · OpenAI / Anthropic (your own key) · KaTeX · FSRS spaced repetition. No backend of its own, no account required. The only telemetry is the [usage count](#usage-counts): no content, and you can turn it off.
 
 ## License
 

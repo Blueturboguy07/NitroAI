@@ -21,7 +21,13 @@ import {
   ensureServingIfProvisioned,
   shutdown as shutdownOllama,
 } from "../server/ollama.mjs";
-import { appToken } from "../server/publik.mjs";
+import {
+  APP_SLUG,
+  appToken,
+  envCredential,
+  isLive,
+  readCredentialFile,
+} from "../server/publik.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -29,6 +35,9 @@ const require = createRequire(import.meta.url);
 // `publik.appToken`, the build-time token that lets a fresh install mint its
 // own publik API key. Null in forks and local builds (see electron-builder.cjs).
 const pkg = require("../package.json");
+// publik usage counts (telemetry v1): app_opened at launch, active_session
+// every 30 minutes. No content. Off with DO_NOT_TRACK=1 — see README.
+const telemetry = require("./publik-telemetry.cjs");
 
 let mainWindow = null;
 let serverInfo = null; // { server, port, url }
@@ -36,6 +45,13 @@ let healthTimer = null;
 
 function binDir() {
   return path.join(app.getPath("userData"), "bin");
+}
+
+/* The publik key this computer holds right now (env → credential file), or
+   null when it has none or was disconnected. Never the user's own provider key. */
+function publikKey() {
+  const c = envCredential() ?? readCredentialFile();
+  return isLive(c) ? c.key : null;
 }
 
 async function ensureServer() {
@@ -121,7 +137,11 @@ async function createWindow() {
   void ensureServingIfProvisioned(binDir(), info.url);
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  // Returns at once and sends in the background: it never delays the window.
+  telemetry.start(APP_SLUG, app.getVersion(), publikKey);
+  return createWindow();
+});
 
 app.on("activate", () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
