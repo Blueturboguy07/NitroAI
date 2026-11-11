@@ -1,8 +1,9 @@
 name: publik build
 
-# Builds the installers of a publik telemetry release (Mac .dmg for arm64 and
-# x64, Windows .exe, Linux .AppImage) with the same commands as release.yml
-# and uploads them as workflow artifacts.
+# Builds the installers of a publik release (Mac .dmg for arm64 and x64,
+# Windows .exe, Linux .AppImage) with the same commands as release.yml and
+# uploads them as workflow artifacts. The Windows and Linux jobs then run the
+# built app's publik self-test (.github/scripts/publik-self-test.cjs).
 #
 # It NEVER creates, changes or publishes a GitHub Release. The files are
 # downloaded, checked on a Mac (signature, notarization ticket, a real
@@ -183,9 +184,10 @@ jobs:
           compression-level: 0
           retention-days: 14
 
-      # Installs the real installer silently, starts the installed app against
-      # a listener on this runner and fails when no correct app_opened arrives.
-      - name: Telemetry test of the installed app
+      # Installs the real installer silently, then runs the installed app with
+      # PUBLIK_SELF_TEST=1 against a fake publik on this runner. The app must
+      # print "publik self-test: ok nitroai <version>" and exit.
+      - name: publik self-test of the installed app
         shell: pwsh
         run: |
           $installer = (Resolve-Path "release\NitroAI-Setup-Windows.exe").Path
@@ -200,8 +202,17 @@ jobs:
             Write-Host "::warning::NitroAI.exe was not found after the silent install. Testing release\win-unpacked instead."
             $target = (Resolve-Path "release\win-unpacked\NitroAI.exe").Path
           }
-          node .github/scripts/publik-telemetry-smoke.cjs "$target"
+          node .github/scripts/publik-self-test.cjs nitroai "$target" --out publik-self-test-windows.json
           if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Upload the self-test result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publik-self-test-windows
+          path: publik-self-test-windows.json
+          if-no-files-found: warn
+          retention-days: 14
 
   linux:
     runs-on: ubuntu-latest
@@ -243,7 +254,8 @@ jobs:
 
       # Best effort: a runner has no screen and no FUSE, so the AppImage runs
       # unpacked under a virtual display. A failure here does not fail the job.
-      - name: Telemetry test of the AppImage (best effort)
+      # The app must print "publik self-test: ok nitroai <version>" and exit.
+      - name: publik self-test of the AppImage (best effort)
         continue-on-error: true
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
@@ -251,4 +263,13 @@ jobs:
           set -euo pipefail
           command -v xvfb-run >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq xvfb; }
           chmod +x release/NitroAI-Linux-x86_64.AppImage
-          xvfb-run -a node .github/scripts/publik-telemetry-smoke.cjs "$PWD/release/NitroAI-Linux-x86_64.AppImage" --no-sandbox
+          xvfb-run -a node .github/scripts/publik-self-test.cjs nitroai "$PWD/release/NitroAI-Linux-x86_64.AppImage" --out publik-self-test-linux.json -- --no-sandbox
+
+      - name: Upload the self-test result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: publik-self-test-linux
+          path: publik-self-test-linux.json
+          if-no-files-found: warn
+          retention-days: 14

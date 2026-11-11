@@ -1,275 +1,306 @@
-/* publik API credential for the packaged app (build contract v1, 2026-09-18).
- *
- * Resolution order (publik credential convention):
- *   1. a key the user typed into Settings — never read here, never overwritten
- *      (it lives in the renderer's own slot, see src/lib/engine/keys.ts)
- *   2. PUBLIK_API_KEY / PUBLIK_API_BASE_URL in the environment (developers, CI smoke)
- *   3. the per-app credential file this module owns
- *   4. nothing — the app then behaves exactly like v0.1.6 (local or BYO key)
- *
- * The file is minted once per machine from the app token baked in at build
- * time, and ONLY after the user has accepted the first-run disclosure (the
- * renderer calls POST /api/publik/provision; nothing here mints on its own).
- * The token identifies THIS app build to publikhq.com; it is not a secret in
- * the strong sense (anyone can extract it from the .app) and the gateway
- * rate-limits and caps what it can mint accordingly.
- *
- * The pk_ key never leaves this process: the renderer talks to the gateway
- * through the local proxy in httpServer.mjs, which attaches the key.
- *
- * Pure Node built-ins, same register as ollama.mjs. */
-
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+// publik.mjs — Sign in with publik, usage counting, and publik API as one provider option.
+// The publik module of https://publikhq.com/sdk/publik.ts.md with the TypeScript types removed:
+// this app's main process is plain JavaScript. The words of the gate, the endpoints, the timers,
+// the self-test and the usage counting are the page's, unchanged.
+// At app start, before any screen of your own: `const gate = await ensureSignedIn(ui)`. It
+//   1. loads or provisions this computer's publik key (POST /api/v1/installs);
+//   2. shows Sign in with publik until GET /api/v1/wallet says "claimed" (no other way past it);
+//   3. when USES_AI: asks once how the app pays for AI and stores the answer (setChoice() changes it);
+//   4. starts usage counting: app_opened now, active_session every 30 minutes (POST /api/v1/telemetry).
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
+import { arch, homedir, hostname, platform } from "node:os";
+import { dirname, join } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { fileURLToPath } from "node:url";
+
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 
 export const APP_SLUG = "nitroai";
-export const PUBLIK_BASE_URL = "https://publikhq.com/api/v1";
-/* The version of the cost + data-path disclosure text the user is shown
-   (src/lib/publikCopy.ts). Bump it when the copy changes materially so the
-   server can re-prompt; the gateway records it and never rejects on it. */
-export const DISCLOSURE_VERSION = 2;
-export const DEFAULT_MODELS = { fast: "publik-fast", balanced: "publik-balanced", smart: "publik-smart" };
-export const KEY_FORMAT = /^pk_(live|test)_[a-z0-9]{12}_[a-z0-9]{32}$/;
+/** The version of the nearest package.json: the one the release tooling bumps. */
+export const APP_VERSION = packageVersion();
+/** false: the app calls no model. It still signs in and counts users; it skips the plan screen. */
+export const USES_AI = true;
+const ORIGIN = process.env.PUBLIK_ORIGIN || "https://publikhq.com"; // PUBLIK_ORIGIN: tests only
+export const DEFAULT_BASE_URL = `${ORIGIN}/api/v1`;
+/** Ask for a tier, never a vendor model name. */
+export const MODELS = { fast: "publik-fast", balanced: "publik-balanced", smart: "publik-smart" };
+const POLL_MS = 3_000, POLL_LIMIT_MS = 10 * 60_000;
+const OS = { darwin: "macos", win32: "windows", linux: "linux" }[platform()];
 
-export function credentialPath(platform = process.platform, env = process.env, home = os.homedir()) {
-  const dir =
-    platform === "darwin"
-      ? path.join(home, "Library", "Application Support", "publik", "apps")
-      : platform === "win32"
-        ? path.join(env.LOCALAPPDATA ?? path.join(home, "AppData", "Local"), "publik", "apps")
-        : path.join(env.XDG_CONFIG_HOME ?? path.join(home, ".config"), "publik", "apps");
-  return path.join(dir, `${APP_SLUG}.json`);
-}
-
-/* The app token: electron-builder's extraMetadata puts it in the packaged
-   package.json; developers can set PUBLIK_APP_TOKEN for `npm run app`. */
-export function appToken({ packageJson, env = process.env } = {}) {
-  return env.PUBLIK_APP_TOKEN || packageJson?.publik?.appToken || null;
-}
-
-/* Maps Node's platform names onto the contract's `os` enum. */
-export function contractOs(platform = process.platform) {
-  if (platform === "darwin") return "macos";
-  if (platform === "win32") return "windows";
-  return "linux";
-}
-
-/* A credential file is either a live credential (has a key) or a
-   "disconnected" marker left behind by a 401 key_revoked with
-   reprovision:false — the app must not silently re-mint in that case. */
-export function readCredentialFile(file = credentialPath()) {
-  try {
-    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (raw?.version !== 1 || typeof raw.install_id !== "string") return null;
-    if (raw.disconnected === true) return raw;
-    if (typeof raw.key === "string" && KEY_FORMAT.test(raw.key) && typeof raw.base_url === "string") return raw;
-  } catch {
-    /* absent or unreadable → no credential */
-  }
-  return null;
-}
-
-export function isLive(c) {
-  return !!c && c.disconnected !== true && typeof c.key === "string";
-}
-
-function writeCredentialFile(file, body) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(body, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, file); // atomic on the same volume; never a half-written key
-}
-
-/* Credential from the environment (developers, CI smoke). Never written to disk. */
-export function envCredential(env = process.env) {
-  if (!env.PUBLIK_API_KEY) return null;
-  return {
-    version: 1,
-    source: "env",
-    key: env.PUBLIK_API_KEY,
-    base_url: (env.PUBLIK_API_BASE_URL || PUBLIK_BASE_URL).replace(/\/$/, ""),
-    models: { ...DEFAULT_MODELS },
-    app_slug: APP_SLUG,
-    install_id: "env",
-    disclosure_version: DISCLOSURE_VERSION,
-  };
-}
-
-/* Mint once. Idempotent: a second call with a live file present is a read,
-   no network. `force` re-mints with the existing install_id (the 401
-   key_revoked + reprovision:true path). A "disconnected" file never
-   re-mints unless `force` is set by an explicit user action (Reconnect),
-   in which case a fresh install_id is used. */
-export async function provision({
-  token,
-  file = credentialPath(),
-  appVersion = "dev",
-  baseUrl = PUBLIK_BASE_URL,
-  disclosureVersion = DISCLOSURE_VERSION,
-  force = false,
-  fetchImpl = fetch,
-  platform = process.platform,
-  deviceName = os.hostname(),
-  osVersion = os.release(),
-  arch = process.arch,
-} = {}) {
-  const existing = readCredentialFile(file);
-  if (existing && isLive(existing) && !force) return { credential: existing, minted: false };
-  if (existing && existing.disconnected && !force) {
-    return { credential: null, minted: false, reason: "disconnected" };
-  }
-  if (!token) return { credential: null, minted: false, reason: "no_app_token" };
-
-  const installsUrl = `${baseUrl.replace(/\/$/, "")}/installs`;
-  // Re-use the install id on a forced re-mint of a live-but-revoked key; a
-  // user-initiated reconnect after a dashboard revoke starts a fresh install.
-  let installId = existing && isLive(existing) && force ? existing.install_id : randomUUID();
-
-  const attempt = async (id) => {
-    const res = await fetchImpl(installsUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        app_token: token,
-        app_slug: APP_SLUG,
-        app_version: String(appVersion).slice(0, 32),
-        os: contractOs(platform),
-        os_version: String(osVersion).slice(0, 64),
-        arch,
-        device_name: String(deviceName || "NitroAI").slice(0, 120),
-        install_id: id,
-        disclosure_version: disclosureVersion,
-        dialects: ["chat_completions"],
-      }),
-      signal: AbortSignal.timeout(10_000),
-    });
-    let body = null;
-    try {
-      body = await res.json();
-    } catch {
-      /* not JSON */
-    }
-    return { res, body };
-  };
-
-  let { res, body } = await attempt(installId);
-  // Contract §3.2 [B1]: a replay of an install_id the gateway already knows
-  // answers 200 with key:null. If we have no credential file for it (crash
-  // between mint and write), mint a fresh install_id exactly once.
-  if (res.status === 200 && body && body.key == null) {
-    installId = randomUUID();
-    ({ res, body } = await attempt(installId));
-  }
-
-  if (res.status === 401 || res.status === 403) return { credential: null, minted: false, reason: "token_revoked" };
-  if (res.status === 429) return { credential: null, minted: false, reason: "rate_limited" };
-  if (res.status === 503) return { credential: null, minted: false, reason: "gateway_unavailable" };
-  if (!res.ok) return { credential: null, minted: false, reason: `http_${res.status}` };
-  if (!body || typeof body.key !== "string" || !KEY_FORMAT.test(body.key)) {
-    return { credential: null, minted: false, reason: "bad_response" };
-  }
-
-  const credential = {
-    ...body, // the 201 body verbatim: base_url, models, claim_*, starter_micros, wallet, disclosure, …
-    version: 1,
-    app_slug: APP_SLUG,
-    install_id: typeof body.install_id === "string" ? body.install_id : installId,
-    base_url: (typeof body.base_url === "string" ? body.base_url : baseUrl).replace(/\/$/, ""),
-    models: { ...DEFAULT_MODELS, ...(body.models && typeof body.models === "object" ? body.models : {}) },
-    disclosure_version: disclosureVersion,
-    minted_at: new Date().toISOString(),
-  };
-  delete credential.disconnected;
-  writeCredentialFile(file, credential);
-  return { credential: readCredentialFile(file), minted: true };
-}
-
-/* 401 key_revoked with reprovision:false — the user revoked this install from
-   the dashboard (or an uninstaller). Keep the install id, drop the key, and
-   remember that we must not re-mint on our own. */
-export function markDisconnected(file = credentialPath()) {
-  const existing = readCredentialFile(file);
-  if (!existing) return;
-  const { key: _key, ...rest } = existing;
-  writeCredentialFile(file, { ...rest, disconnected: true, disconnected_at: new Date().toISOString() });
-}
-
-/* "Use my own key instead" / "Forget publik on this computer" → forget the
-   credential on this machine. The key is revoked server-side by the idle
-   sweep; the app just stops using it. */
-export function forget(file = credentialPath()) {
-  try {
-    fs.rmSync(file);
-  } catch {
-    /* already gone */
+/** Walks up from this module's folder; `found(dir)` returns a value or null. */
+function nearest(found) {
+  for (let dir = MODULE_DIR; ; dir = dirname(dir)) {
+    const v = found(dir);
+    if (v) return v;
+    if (dirname(dir) === dir) return null;
   }
 }
 
-/* What the renderer may see. The key is deliberately NOT included: the
-   renderer reaches the gateway only through the local proxy, which attaches
-   it. Nothing here is ever written to localStorage by the renderer. */
-export function credentialForRenderer(c, { available = true } = {}) {
-  if (!c) return { available, state: "unprovisioned", baseUrl: "/api/publik/v1" };
-  if (c.disconnected) {
-    return {
-      available,
-      state: "disconnected",
-      baseUrl: "/api/publik/v1",
-      installId: c.install_id,
-      disclosureVersion: c.disclosure_version ?? DISCLOSURE_VERSION,
-    };
-  }
-  return {
-    available: true,
-    state: "ready",
-    source: c.source ?? "file",
-    baseUrl: "/api/publik/v1",
-    models: { ...DEFAULT_MODELS, ...(c.models ?? {}) },
-    dialects: Array.isArray(c.dialects) ? c.dialects : ["chat_completions"],
-    // Optional: a future gateway can narrow capabilities per install.
-    lines: Array.isArray(c.lines) ? c.lines : null,
-    // Contract §11.4: claim links live on https://publikhq.com/ only.
-    claimUrl: typeof c.claim_url === "string" && /^https:\/\/publikhq\.com\//.test(c.claim_url) ? c.claim_url : null,
-    claimCode: typeof c.claim_code === "string" ? c.claim_code : null,
-    installId: c.install_id,
-    disclosureVersion: c.disclosure_version ?? DISCLOSURE_VERSION,
-    starterMicros: Number.isFinite(c.starter_micros) ? c.starter_micros : null,
-    balanceMicros: Number.isFinite(c.balance_micros) ? c.balance_micros : null,
-    mintedAt: c.minted_at ?? null,
-  };
-}
-
-/* Balance line for Settings: GET /wallet (R21 §2.3 shape; the header path
-   updates it after every call, this is the fallback + refresh). */
-export async function wallet(c, fetchImpl = fetch) {
-  const res = await fetchImpl(`${c.base_url}/wallet`, {
-    headers: { authorization: `Bearer ${c.key}` },
-    signal: AbortSignal.timeout(5000),
+function packageVersion() {
+  const v = nearest((dir) => {
+    try { return String(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version || ""); } catch { return null; }
   });
-  let body = null;
-  try {
-    body = await res.json();
-  } catch {
-    /* not JSON */
-  }
-  return { status: res.status, body };
+  return (v || "0.0.0").replace(/^v/i, "");
 }
 
-/* Self-revoke ("Disconnect publik API" in Settings): POST /installs/revoke
-   with the install's own key, then forget the file. Best effort. */
-export async function revoke(c, fetchImpl = fetch) {
+/** PUBLIK_APP_TOKEN, else publik-app-token.txt in this folder or a parent, else the token this app's build bakes in. */
+function appToken() {
+  const env = process.env.PUBLIK_APP_TOKEN?.trim();
+  if (env) return env;
+  const file = nearest((dir) => (existsSync(join(dir, "publik-app-token.txt")) ? readFileSync(join(dir, "publik-app-token.txt"), "utf8").trim() : null));
+  return file || bakedAppToken() || "";
+}
+/** The token electron-builder's extraMetadata puts in the packaged package.json (`publik.appToken`); null in forks and dev builds. */
+function bakedAppToken() {
+  return nearest((dir) => {
+    try { const t = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).publik?.appToken; return typeof t === "string" && t.trim() ? t.trim() : null; } catch { return null; }
+  });
+}
+/** True when this build can provision a key. */
+export function hasAppToken() { return appToken().startsWith("pat_"); }
+
+/** ~/Library/Application Support/publik, %LOCALAPPDATA%\publik, ~/.config/publik: shared by every publik app. */
+function publikDir() {
+  const os = platform();
+  const base = os === "darwin" ? join(homedir(), "Library", "Application Support")
+    : os === "win32" ? (process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"))
+    : (process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"));
+  return join(base, "publik");
+}
+export const credentialPath = () => join(publikDir(), "apps", `${APP_SLUG}.json`);
+
+export function readCredential() {
   try {
-    await fetchImpl(`${c.base_url}/installs/revoke`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${c.key}` },
-      signal: AbortSignal.timeout(5000),
+    const c = JSON.parse(readFileSync(credentialPath(), "utf8"));
+    return typeof c.key === "string" && c.key.startsWith("pk_") ? c : null;
+  } catch { return null; }
+}
+function writeCredential(c) {
+  const file = credentialPath();
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(c ?? {}, null, 2), { mode: 0o600 });
+  chmodSync(file, 0o600);
+}
+/** The person's answer to the plan screen. Settings call it to change the answer; null asks again at the next start. */
+export function setChoice(choice) {
+  const c = readCredential();
+  if (c) writeCredential({ ...c, choice });
+}
+
+/** The key this app uses: the stored choice decides. PUBLIK_API_KEY / PUBLIK_API_BASE_URL in the environment override (development). */
+export function resolveProvider(userKey) {
+  if (process.env.PUBLIK_API_KEY) return { kind: "publik", baseURL: process.env.PUBLIK_API_BASE_URL ?? DEFAULT_BASE_URL, apiKey: process.env.PUBLIK_API_KEY };
+  const c = readCredential();
+  if (c?.choice === "publik") return { kind: "publik", baseURL: c.base_url || DEFAULT_BASE_URL, apiKey: c.key };
+  return userKey?.apiKey ? { kind: "own", ...userKey } : { kind: "needs_own_key" };
+}
+
+/** POST /api/v1/installs: this computer's publik key. Throws a readable message. */
+export async function provision() {
+  const token = appToken();
+  if (!token.startsWith("pat_")) throw new Error("This build has no publik app token. Ask the developer for a new build.");
+  const prior = readCredential();
+  let installId = prior?.install_id ?? randomUUID();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch(`${ORIGIN}/api/v1/installs`, {
+      method: "POST", headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({ app_token: token, app_slug: APP_SLUG, app_version: APP_VERSION, os: OS ?? "linux", arch: arch(),
+        device_name: hostname().slice(0, 120), install_id: installId, disclosure_version: 1, dialects: ["chat_completions"] }),
     });
-  } catch {
-    /* offline — the idle sweep revokes it eventually */
+    const body = await res.json().catch(() => ({}));
+    const key = body.key ?? (res.status === 200 ? prior?.key ?? null : null);
+    if ((res.status === 201 || res.status === 200) && key) {
+      const c = { key, base_url: body.base_url ?? DEFAULT_BASE_URL, install_id: body.install_id ?? installId, claim_url: body.claim_url ?? null, choice: prior?.choice ?? null };
+      writeCredential(c); // the key reaches disk before anything else sees it
+      return c;
+    }
+    if (res.status === 200 || body.error?.type === "install_revoked") { installId = randomUUID(); continue; }
+    throw new Error(body.error?.message ?? `publik could not set up this computer (${res.status}).`);
   }
+  throw new Error("publik could not set up this computer.");
+}
+
+/** GET /api/v1/wallet. 401: the key is gone (null wallet). Throws when publik is not reachable. */
+export async function readWallet(key) {
+  const res = await fetch(`${ORIGIN}/api/v1/wallet`, { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
+  const b = await res.json().catch(() => ({}));
+  if (!res.ok || typeof b.claim_state !== "string") return { status: res.status, wallet: null, message: b.error?.message ?? null };
+  return { status: res.status, message: null, wallet: { ...b, account: b.account ?? null, plan: b.plan ?? { kind: "none", label: null }, balance_micros: b.balance_micros ?? 0 } };
+}
+
+const dollars = (micros) => `$${(micros / 1_000_000).toFixed(2)}`;
+/** The words of the gate. The same in every publik module. */
+export function gateScreen(id, w, note = null, message) {
+  if (id === "unreachable") return { id, title: "Sign in with publik", body: message ?? "publik is not reachable. Check your connection.", note, buttons: [{ action: "retry", label: "Retry" }] };
+  if (id === "sign_in") return { id, title: "Sign in with publik", note, buttons: [{ action: "sign_in", label: "Sign in with publik" }],
+    body: "This app uses your publik account. Click Sign in with publik, then sign in in your browser. This window continues when you are signed in." };
+  const who = w?.account?.handle ? `You are signed in as @${w.account.handle}.` : "You are signed in to publik.";
+  if (!w || (w.plan.kind === "none" && w.balance_micros === 0)) return { id, title: "Choose how to pay for AI", note,
+    body: `${who} This app uses AI. Get a publik plan, or use your own key.`, buttons: [{ action: "get_plan", label: "Get a plan" }, { action: "own_key", label: "Use my own key" }] };
+  const what = w.plan.kind === "plan" ? `Your plan: ${w.plan.label ?? "publik"}.` : `Your balance: ${dollars(w.balance_micros)}.`;
+  return { id, title: "Connect your plan", note, body: `${who} ${what} Connect it to use AI in this app, or use your own key.`,
+    buttons: [{ action: "connect", label: "Connect your plan" }, { action: "own_key", label: "Use my own key" }] };
+}
+
+/** Show a screen; with `until`, also poll GET /wallet every 3 s for at most 10 minutes. "done": the poll saw it; "timeout": it did not. */
+async function ask(ui, screen, key, until) {
+  const stop = new AbortController();
+  const poll = async () => {
+    for (const end = Date.now() + POLL_LIMIT_MS; Date.now() < end && !stop.signal.aborted; ) {
+      await new Promise((r) => setTimeout(r, POLL_MS));
+      if (stop.signal.aborted) break;
+      const w = await readWallet(key).then((r) => r.wallet, () => null);
+      if (w && until(w)) return "done";
+    }
+    return "timeout";
+  };
+  try { return await Promise.race([ui.show(screen, stop.signal), ...(until ? [poll()] : [])]); } finally { stop.abort(); }
+}
+
+/** The gate (see the top of the file). Resolves once the person is signed in; `choice` is null when USES_AI is false. */
+export async function ensureSignedIn(ui = terminalUI()) {
+  if (process.env.PUBLIK_SELF_TEST) {
+    // Straight to fd 1, then exit, then wait: an Electron main process can hold a console.log
+    // line in a queue that the exit drops, and its process.exit() can come back before the
+    // process ends. The line must be on the pipe before the exit, and the gate must not run.
+    writeSync(1, `${await selfTest()}\n`);
+    process.exit(0);
+    await new Promise(() => {});
+  }
+  let signNote = null, signPoll = true, planNote = null, planPoll = false;
+  for (;;) {
+    let c, r;
+    try {
+      c = process.env.PUBLIK_API_KEY ? { key: process.env.PUBLIK_API_KEY, base_url: DEFAULT_BASE_URL, install_id: "", claim_url: null } : readCredential() ?? (await provision());
+      r = await readWallet(c.key);
+    } catch (e) {
+      const offline = e instanceof TypeError || (e instanceof Error && /abort|timeout/i.test(e.name));
+      await ask(ui, gateScreen("unreachable", null, null, offline ? undefined : String(e.message)));
+      continue;
+    }
+    if (r.status === 401 && !process.env.PUBLIK_API_KEY) { writeCredential(null); continue; } // a revoked key: provision again
+    const w = r.wallet;
+    if (!w) { await ask(ui, gateScreen("unreachable", null, null, r.message ?? undefined)); continue; }
+    if (w.claim_state !== "claimed") {
+      const a = await ask(ui, gateScreen("sign_in", w, signNote), c.key, signPoll ? (x) => x.claim_state === "claimed" : undefined);
+      if (a === "sign_in") { ui.openUrl(w.claim_url ?? c.claim_url ?? `${ORIGIN}/wallet`); signNote = "Waiting for you to sign in in your browser."; signPoll = true; }
+      if (a === "timeout") { signNote = "No sign-in after 10 minutes. Click Sign in with publik to try again."; signPoll = false; }
+      continue;
+    }
+    let choice = USES_AI ? readCredential()?.choice ?? null : null;
+    if (USES_AI && !choice) {
+      if (w.plan.kind !== "none" || w.balance_micros > 0) { planNote = null; planPoll = false; } // the plan is there: Connect your plan
+      const a = await ask(ui, gateScreen("choose", w, planNote), c.key, planPoll ? (x) => x.plan.kind !== "none" || x.balance_micros > 0 : undefined);
+      planNote = null; planPoll = false;
+      if (a === "get_plan") { ui.openUrl(w.top_up_url); planNote = "Waiting for your plan. Finish in your browser."; planPoll = true; }
+      if (a === "timeout") planNote = "No plan after 10 minutes. Click Get a plan to try again.";
+      if (a !== "connect" && a !== "own_key") continue; // "done": the plan is there; the next screen is Connect your plan
+      choice = a === "connect" ? "publik" : "own_key";
+      setChoice(choice);
+    }
+    startTelemetry();
+    return { key: c.key, wallet: w, choice };
+  }
+}
+
+/** Builder check, run by the BUILT app: PUBLIK_SELF_TEST=1 makes ensureSignedIn() print this line and exit. */
+export async function selfTest() {
+  try {
+    const r = await readWallet((await provision()).key);
+    if (!r.wallet) throw new Error(r.message ?? `GET /wallet answered ${r.status}`);
+    return `publik self-test: ok ${APP_SLUG} ${APP_VERSION}`;
+  } catch (e) {
+    const offline = e instanceof TypeError || (e instanceof Error && /abort|timeout/i.test(e.name));
+    return `publik self-test: failed: ${offline ? "publik is not reachable. Check your connection." : e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+/** A terminal UI for a command-line app. An Electron app passes its own GateUI (publik-gate). */
+export function terminalUI() {
+  return {
+    async show(s, signal) {
+      console.log(`\n${s.title}\n${s.body}${s.note ? `\n${s.note}` : ""}\n${s.buttons.map((b, i) => `  ${i + 1}. ${b.label}`).join("\n")}`);
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        for (;;) {
+          const n = Number((await rl.question(s.buttons.length > 1 ? "Type a number and press Enter: " : "Press Enter: ", { signal })) || 1);
+          if (s.buttons[n - 1]) return s.buttons[n - 1].action;
+        }
+      } catch { return new Promise(() => {}); } finally { rl.close(); }
+    },
+    openUrl(url) {
+      console.log(`Open this link if your browser does not open: ${url}`);
+      const [cmd, args] = platform() === "darwin" ? ["open", [url]] : platform() === "win32" ? ["rundll32", ["url.dll,FileProtocolHandler", url]] : ["xdg-open", [url]];
+      try { spawn(cmd, args, { detached: true, stdio: "ignore" }).on("error", () => {}).unref(); } catch {}
+    },
+  };
+}
+
+// ---------- usage counting: /skills/telemetry.md sections 3-5 ----------
+let timer = null, installIdOnce = null;
+
+function usageOff() {
+  const dnt = (process.env.DO_NOT_TRACK ?? "").trim().toLowerCase();
+  if (dnt !== "" && dnt !== "0" && dnt !== "false") return true;
+  if (["0", "false", "off"].includes((process.env.PUBLIK_TELEMETRY ?? "").trim().toLowerCase())) return true;
+  try { return JSON.parse(readFileSync(join(publikDir(), "consent.json"), "utf8")).usage === false; } catch { return false; }
+}
+/** One random UUID per computer account, shared by every publik app, in <publik dir>/telemetry.json (mode 0600). */
+function telemetryInstallId() {
+  const file = join(publikDir(), "telemetry.json");
+  const saved = () => {
+    try {
+      const id = String(JSON.parse(readFileSync(file, "utf8")).install_id).toLowerCase();
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id) ? id : null;
+    } catch { return null; }
+  };
+  if ((installIdOnce ??= saved())) return installIdOnce;
+  const fresh = randomUUID(); // if the file cannot be saved, this ID lasts for this run only
+  try {
+    mkdirSync(publikDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(file, JSON.stringify({ install_id: fresh, created_at: new Date().toISOString().replace(/\.\d+Z$/, "Z") }) + "\n", { flag: "wx", mode: 0o600 });
+    return (installIdOnce = fresh);
+  } catch { return (installIdOnce = saved() ?? fresh); } // another publik app saved its ID first
+}
+async function sendEvent(event) {
+  const say = (result) => { if (process.env.PUBLIK_TELEMETRY_DEBUG === "1") process.stderr.write(`publik-telemetry: ${event} -> ${result}\n`); };
+  try {
+    if (!OS) return;
+    if (usageOff()) return say("off (opt-out)");
+    const key = process.env.PUBLIK_API_KEY || readCredential()?.key;
+    const body = { v: 1, app: APP_SLUG, install_id: telemetryInstallId(), event, app_version: APP_VERSION.replace(/^v/i, ""), os: OS,
+      ...(arch() === "arm64" || arch() === "x64" ? { arch: arch() } : {}) };
+    const res = await fetch(process.env.PUBLIK_TELEMETRY_URL || `${ORIGIN}/api/v1/telemetry`, { method: "POST", signal: AbortSignal.timeout(5_000),
+      headers: { "content-type": "application/json", ...(key?.startsWith("pk_") ? { authorization: `Bearer ${key}` } : {}) }, body: JSON.stringify(body) });
+    say(res.status);
+  } catch (e) { say(e instanceof Error ? e.name : "error"); }
+}
+/** Called by ensureSignedIn(). app_opened now, active_session every 30 minutes; never throws, never blocks. */
+export function startTelemetry() {
+  if (timer) return;
+  const s = Number(process.env.PUBLIK_TELEMETRY_INTERVAL_SECONDS); // tests only
+  timer = setInterval(() => void sendEvent("active_session"), (s >= 1 && s <= 86_400 ? s : 1_800) * 1000);
+  timer.unref?.();
+  void sendEvent("app_opened");
+}
+
+// ---------- publik API calls ----------
+/** OpenAI-compatible client config: new OpenAI(clientConfig(p)). */
+export function clientConfig(p) { return { baseURL: p.baseURL, apiKey: p.apiKey }; }
+
+/** A 402 renders its message plus exactly ONE link: this one. */
+export function topUpUrlFrom402(body) {
+  const e = body?.error;
+  return { message: e?.message ?? "Not enough publik API balance.", url: e?.top_up_url ?? null };
+}
+
+/** `POST /search`: web results for `q` (quote a phrase to find it exactly), one published price per search; on 402 the message and the one link. */
+export async function search(p, q, count = 10) {
+  const res = await fetch(`${p.baseURL}/search`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${p.apiKey}` }, body: JSON.stringify({ q, count }) });
+  const body = await res.json().catch(() => ({}));
+  if (res.status === 402) return { results: [], ...topUpUrlFrom402(body) };
+  if (!res.ok) throw new Error(body.error?.message ?? `publik API answered ${res.status}`);
+  return { results: body.results ?? [] };
 }
