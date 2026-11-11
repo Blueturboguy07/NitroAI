@@ -52,7 +52,7 @@ NitroAI is a small desktop shell around a local web app. When you open it, the a
 
 You pick one on first launch (and can switch any time in Settings):
 
-- **publik API** (default in the packaged builds) — NitroAI sets itself up on first launch, after you accept a short disclosure. Every request is priced per use at 50% of the model's published list price; audio transcription, podcast voices and embeddings are passed through at cost. Most people spend under $2 a month. A new computer starts at $0.00 and no card is asked for: linking it to your publik account gives $0.05 of free use, once per account, and a plan, a pack or your own key takes it from there. Right after setup the app shows your balance and why it costs money, with a button to link the computer and pick a plan (you can also do that later from Settings). Until you link, add a plan or pack, or paste your own key, every publik API request answers 402 and the app shows the link button instead. Your prompts go through publik's servers to a shared model account; publik does not keep them after the reply and never trains on them. The install's key lives in `~/Library/Application Support/publik/apps/nitroai.json` (mac) / `%LOCALAPPDATA%\publik\apps\nitroai.json` (Windows), readable only by you, and never leaves the app's local server. Builds without a publik app token (forks, `npm run app` without `PUBLIK_APP_TOKEN`) simply don't offer this option.
+- **publik API** (default in the packaged builds) — NitroAI opens with **Sign in with publik**. The sign-in happens in your browser; the app continues when you are signed in. Then it asks once how it pays for AI: **Get a plan** or **Connect your plan**, or **Use my own key**. You can change the answer in Settings. Every request is priced per use at 50% of the model's published list price; audio transcription, podcast voices and embeddings are passed through at cost. Most people spend under $2 a month. Your prompts go through publik's servers to a shared model account; publik does not keep them after the reply and never trains on them. The install's key lives in `~/Library/Application Support/publik/apps/nitroai.json` (mac) / `%LOCALAPPDATA%\publik\apps\nitroai.json` (Windows), readable only by you, and never leaves the app's local server. Builds without a publik app token (forks, `npm run app` without `PUBLIK_APP_TOKEN`) cannot sign in.
 - **Fully local** — when you choose this, NitroAI automatically downloads and starts a local AI runtime ([Ollama](https://ollama.com)) and pulls a small, capable model (~2 GB, one time). Everything then runs on your device: no key, no cloud, no cost. *Provisioning only ever happens if you pick local — cloud users never download a model.*
 - **Use my own key** — paste an OpenAI (`sk-…`), Anthropic (`sk-ant-…`) or publik (`pk_…`) key for the highest-quality notes, quizzes, chat, and podcast voices. The key is stored only on this computer and used only to call your provider directly. A key you enter yourself is never overwritten by the publik setup.
 
@@ -60,8 +60,8 @@ Your notes and generated content live only on your machine (in the app's local d
 
 ## Usage counts
 
-The packaged app sends two usage events to publik: `app_opened` at each launch and `active_session` every 30 minutes while it runs. This happens in every mode, fully local included.
-Each event holds the app name, the app version, the operating system, the CPU type and a random install ID, so a computer without publik API is counted anonymously. On a computer that is set up for publik API, the event also carries that install's publik key: publik then links the count to the install and, if you linked one, to your publik account.
+After the sign-in, the app sends two usage events to publik: `app_opened` at each launch and `active_session` every 30 minutes while it runs. This happens in every mode, fully local included. The publik module (`server/publik.mjs`) sends them.
+Each event holds the app name, the app version, the operating system, the CPU type and a random install ID. It also carries this computer's publik key, so publik counts you one time, by your publik account.
 It never holds your notes, prompts, file names or your own provider keys.
 To turn it off, set `DO_NOT_TRACK=1` (or `PUBLIK_TELEMETRY=0`) in the environment before you start NitroAI. Details: <https://publikhq.com/skills/telemetry.md>.
 
@@ -102,12 +102,12 @@ src/            React app (UI + all generation/engine/ingest logic, TypeScript)
   lib/generation/  notes, flashcards, quiz, podcast, chat
 server/         the local server the desktop shell runs
   httpServer.mjs  serves the built app + /api/youtube-extract + /api/local/* + /api/publik/*
-  publik.mjs      publik API credential (mint after consent, stored 0600, key never in the renderer)
+  publik.mjs      the publik module: Sign in with publik, the plan choice, usage counts, this computer's key (stored 0600, never in the renderer)
   publikProxy.mjs streaming proxy to publik API — the renderer's only door to it
   ytdlp.mjs       yt-dlp download + caption/audio extraction
   ollama.mjs      Ollama install / serve / model-pull lifecycle
-electron/       the desktop shell (starts the server, opens the window)
-  publik-telemetry.cjs  publik usage counts client (see Usage counts)
+electron/       the desktop shell (shows the publik gate, starts the server, opens the window)
+  publik-gate.mjs  the gate window the publik module shows before the app's window
 ```
 
 ## Signing your own builds
@@ -135,7 +135,7 @@ By default the release workflow produces **ad-hoc-signed** builds — valid, but
 
 | Secret | What it is |
 | --- | --- |
-| `PUBLIK_APP_TOKEN` | The `pat_…` app token publik issues for this app. Baked into the build (`extraMetadata.publik.appToken`); without it the build offers only Local and your own key. It identifies the build, not the user, and publik rate-limits what it can mint. |
+| `PUBLIK_APP_TOKEN` | The `pat_…` app token publik issues for this app. Baked into the build (`extraMetadata.publik.appToken`); the sign-in gate needs it. It identifies the build, not the user, and publik rate-limits what it can mint. |
 
 Then cut a release: `git tag v0.1.3 && git push --tags`. That's it — nothing else to configure.
 
