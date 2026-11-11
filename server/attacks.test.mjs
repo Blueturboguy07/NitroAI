@@ -40,44 +40,56 @@ vi.mock("./ytdlp.mjs", () => ({
   },
 }));
 
-const { startServer } = await import("./httpServer.mjs");
-
 const TOKEN = "pat_nitroai_k3m9x2q7v5n8r4t6w1y0z2b5c8d1f4g7";
 const KEY = "pk_live_a8k2m9x4q7v1_h3n6r9t2w5y8z1b4c7d0f3g6j9k2m5p8";
 
-/* The fake gateway: mint, chat, wallet, models, revoke. Every hit is kept. */
+const ENV_KEYS = ["PUBLIK_ORIGIN", "PUBLIK_APP_TOKEN", "PUBLIK_API_KEY", "PUBLIK_API_BASE_URL", "HOME", "USERPROFILE", "XDG_CONFIG_HOME", "LOCALAPPDATA"];
+const savedEnv = {};
+for (const k of ENV_KEYS) savedEnv[k] = process.env[k];
+
+/* The fake gateway: mint (the publik module's POST /api/v1/installs), wallet,
+   chat, models. Every hit is kept. It listens before the server is imported:
+   the publik module reads PUBLIK_ORIGIN at load. */
 const gateway = { server: null, url: "", hits: [] };
-beforeAll(async () => {
-  gateway.server = http.createServer((req, res) => {
-    const chunks = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf8");
-      gateway.hits.push({ method: req.method, url: req.url, body: raw });
-      const json = (status, body) => {
-        res.writeHead(status, { "content-type": "application/json" });
-        res.end(JSON.stringify(body));
-      };
-      if (req.url === "/installs") {
-        return json(201, { install_id: JSON.parse(raw).install_id, key: KEY, base_url: gateway.url, models: { fast: "publik-fast" }, starter_micros: 0, balance_micros: 0 });
-      }
-      if (req.url === "/chat/completions") {
-        res.writeHead(200, { "content-type": "text/event-stream", "x-publik-balance": "248760" });
-        return res.end('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: [DONE]\n\n');
-      }
-      if (req.url === "/wallet") return json(200, { balance_micros: 181240, claim_state: "anonymous" });
-      if (req.url === "/models") return json(200, { object: "list", data: [{ id: "publik-fast" }] });
-      if (req.url === "/installs/revoke") {
-        res.writeHead(204);
-        return res.end();
-      }
-      json(404, { error: { type: "not_found" } });
-    });
+gateway.server = http.createServer((req, res) => {
+  const chunks = [];
+  req.on("data", (c) => chunks.push(c));
+  req.on("end", () => {
+    const raw = Buffer.concat(chunks).toString("utf8");
+    gateway.hits.push({ method: req.method, url: req.url, body: raw });
+    const json = (status, body) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    };
+    if (req.url === "/api/v1/installs") {
+      return json(201, { install_id: JSON.parse(raw).install_id, key: KEY, base_url: gateway.url, claim_state: "anonymous" });
+    }
+    if (req.url === "/chat/completions") {
+      res.writeHead(200, { "content-type": "text/event-stream", "x-publik-balance": "248760" });
+      return res.end('data: {"choices":[{"delta":{"content":"Hello"}}]}\n\ndata: [DONE]\n\n');
+    }
+    if (req.url === "/api/v1/wallet") return json(200, { balance_micros: 181240, claim_state: "anonymous", plan: { kind: "none", label: null } });
+    if (req.url === "/models") return json(200, { object: "list", data: [{ id: "publik-fast" }] });
+    json(404, { error: { type: "not_found" } });
   });
-  await new Promise((r) => gateway.server.listen(0, "127.0.0.1", r));
-  gateway.url = `http://127.0.0.1:${gateway.server.address().port}`;
 });
-afterAll(() => gateway.server.close());
+await new Promise((r) => gateway.server.listen(0, "127.0.0.1", r));
+gateway.url = `http://127.0.0.1:${gateway.server.address().port}`;
+process.env.PUBLIK_ORIGIN = gateway.url;
+process.env.PUBLIK_APP_TOKEN = TOKEN;
+delete process.env.PUBLIK_API_KEY;
+delete process.env.PUBLIK_API_BASE_URL;
+
+const { startServer } = await import("./httpServer.mjs");
+const { credentialPath, readCredential } = await import("./publik.mjs");
+
+afterAll(() => {
+  gateway.server.close();
+  for (const k of ENV_KEYS) {
+    if (savedEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedEnv[k];
+  }
+});
 
 let dir;
 let file;
@@ -86,12 +98,17 @@ beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "nitroai-attacks-"));
   fs.mkdirSync(path.join(dir, "dist"));
   fs.writeFileSync(path.join(dir, "dist", "index.html"), "<html>app</html>");
-  file = path.join(dir, "publik", "apps", "nitroai.json");
+  // The publik module's credential file, under a temp HOME of this test.
+  process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env.XDG_CONFIG_HOME = path.join(dir, ".config");
+  process.env.LOCALAPPDATA = path.join(dir, "AppData", "Local");
+  file = credentialPath();
   app = await startServer({
     distDir: path.join(dir, "dist"),
     binDir: path.join(dir, "bin"),
     port: 0,
-    publik: { token: TOKEN, appVersion: "0.2.3", credentialFile: file, baseUrl: gateway.url },
+    publik: { appVersion: "0.2.3" },
   });
   calls.provision = 0;
   calls.status = 0;
@@ -333,13 +350,18 @@ describe("the app's own calls still work (positive)", () => {
     expect(chat.status).toBe(200);
     expect(chat.text).toContain("Hello");
     expect(gatewayHits("/chat/completions")).toHaveLength(1);
-    // Disconnect: the app sends "{}" as JSON (localFetch).
+    // Disconnect ("Use my own key"): the app sends "{}" as JSON (localFetch).
+    // The key stays on disk for the sign-in and the usage counts; the app
+    // stops using it for AI. Nothing goes to the gateway.
+    const before = gateway.hits.length;
     const off = JSON.parse((await own("POST", "/api/publik/disconnect")).text);
     expect(off).toMatchObject({ ok: true, state: "unprovisioned" });
-    expect(gatewayHits("/installs/revoke")).toHaveLength(1);
-    expect(fs.existsSync(file)).toBe(false);
+    expect(gateway.hits).toHaveLength(before);
+    expect(readCredential()).toMatchObject({ key: KEY, choice: "own_key" });
     await own("POST", "/api/publik/provision", JSON.stringify({ disclosure_version: 1 }));
+    expect(readCredential()).toMatchObject({ key: KEY, choice: "publik" });
     expect(JSON.parse((await own("POST", "/api/publik/forget")).text)).toMatchObject({ ok: true, state: "unprovisioned" });
+    expect(readCredential()).toMatchObject({ key: KEY, choice: "own_key" });
   });
 
   it("the audio upload (multipart/form-data) still reaches the gateway", async () => {

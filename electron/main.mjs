@@ -13,7 +13,6 @@
  */
 
 import { app, BrowserWindow, shell } from "electron";
-import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { STABLE_PORTS, startServer } from "../server/httpServer.mjs";
@@ -21,37 +20,24 @@ import {
   ensureServingIfProvisioned,
   shutdown as shutdownOllama,
 } from "../server/ollama.mjs";
-import {
-  APP_SLUG,
-  appToken,
-  envCredential,
-  isLive,
-  readCredentialFile,
-} from "../server/publik.mjs";
+// The publik module: Sign in with publik at start-up, the plan choice, usage
+// counts and this computer's publik key. The key stays in this process and
+// the local server; the renderer talks through /api/publik/.
+import { ensureSignedIn, hasAppToken } from "../server/publik.mjs";
+import { electronGateUI } from "./publik-gate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
-// Inside app.asar this carries electron-builder's extraMetadata — including
-// `publik.appToken`, the build-time token that lets a fresh install mint its
-// own publik API key. Null in forks and local builds (see electron-builder.cjs).
-const pkg = require("../package.json");
-// publik usage counts (telemetry v1): app_opened at launch, active_session
-// every 30 minutes. No content. Off with DO_NOT_TRACK=1 — see README.
-const telemetry = require("./publik-telemetry.cjs");
 
 let mainWindow = null;
 let serverInfo = null; // { server, port, url }
 let healthTimer = null;
+// True once the app's own window has been created. Before that, the only
+// window is the publik gate: closing it quits the app (publik-gate.mjs), and
+// its planned close after the sign-in must not count as "all windows closed".
+let appWindowCreated = false;
 
 function binDir() {
   return path.join(app.getPath("userData"), "bin");
-}
-
-/* The publik key this computer holds right now (env → credential file), or
-   null when it has none or was disconnected. Never the user's own provider key. */
-function publikKey() {
-  const c = envCredential() ?? readCredentialFile();
-  return isLive(c) ? c.key : null;
 }
 
 async function ensureServer() {
@@ -80,9 +66,9 @@ async function ensureServer() {
     // A stable port keeps the renderer's origin (and so its localStorage /
     // IndexedDB) the same across launches — see STABLE_PORTS in httpServer.mjs.
     ports: STABLE_PORTS,
-    // The token stays in this process and the local server; the renderer
-    // never sees it (nor the minted key — it talks through /api/publik/).
-    publik: { token: appToken({ packageJson: pkg }), appVersion: app.getVersion() },
+    // The module reads the app token and the key itself (server/publik.mjs);
+    // the renderer never sees either — it talks through /api/publik/.
+    publik: { available: hasAppToken(), appVersion: app.getVersion() },
   });
   return serverInfo;
 }
@@ -103,6 +89,7 @@ function startHealthWatch() {
 
 async function createWindow() {
   const info = await ensureServer();
+  appWindowCreated = true;
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -137,18 +124,23 @@ async function createWindow() {
   void ensureServingIfProvisioned(binDir(), info.url);
 }
 
-app.whenReady().then(() => {
-  // Returns at once and sends in the background: it never delays the window.
-  telemetry.start(APP_SLUG, app.getVersion(), publikKey);
+app.whenReady().then(async () => {
+  // Every publik app opens with Sign in with publik. The gate window shows
+  // until this computer is signed in, asks once how the app pays for AI, and
+  // starts the usage counts (app_opened now, active_session every 30 minutes).
+  // PUBLIK_SELF_TEST=1 makes it print the self-test line and exit instead.
+  const ui = electronGateUI({ appName: "NitroAI" });
+  await ensureSignedIn(ui);
+  ui.close();
   return createWindow();
 });
 
 app.on("activate", () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  if (appWindowCreated && BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (appWindowCreated && process.platform !== "darwin") app.quit();
 });
 
 /* Tear the local server and any Ollama we spawned down when the app exits. */
