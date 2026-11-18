@@ -65,6 +65,10 @@ Each event holds the app name, the app version, the operating system, the CPU ty
 It never holds your notes, prompts, file names or your own provider keys.
 To turn it off, set `DO_NOT_TRACK=1` (or `PUBLIK_TELEMETRY=0`) in the environment before you start NitroAI. Details: <https://publikhq.com/skills/telemetry.md>.
 
+## Updates
+
+On macOS and Windows, NitroAI checks publik's signed update feed at launch, every 24 hours and from **Check for Updates…** in the menu (macOS: the NitroAI menu; Windows: Help). It downloads an update in the background, verifies it, and asks you to restart. Linux: download the new AppImage by hand. Details, the feed contract, key rotation and roll back: [docs/updates.md](docs/updates.md).
+
 ## For developers
 
 Requires **Node ≥ 20.19** (Node 21.x is not supported — use 20.19+ or 22 LTS).
@@ -108,6 +112,7 @@ server/         the local server the desktop shell runs
   ollama.mjs      Ollama install / serve / model-pull lifecycle
 electron/       the desktop shell (shows the publik gate, starts the server, opens the window)
   publik-gate.mjs  the gate window the publik module shows before the app's window
+  publik-updater.cjs, publik-update-verify.cjs  signed self-updates (docs/updates.md)
 ```
 
 ## Signing your own builds
@@ -130,6 +135,13 @@ By default the release workflow produces **ad-hoc-signed** builds — valid, but
 | --- | --- |
 | `WIN_CSC_LINK` | Your code-signing cert as a base64-encoded `.pfx` |
 | `WIN_CSC_KEY_PASSWORD` | The `.pfx` password |
+
+**Update feed** (`update-feed.yml`, see [docs/updates.md](docs/updates.md)):
+
+| Secret | What it is |
+| --- | --- |
+| `PUBLIK_UPDATE_KEY` | The publik update private key (as `tauri signer generate` wrote it). It signs `latest.yml` and `latest-mac.yml`. |
+| `PUBLIK_UPDATE_KEY_PASSWORD` | Its password |
 
 **publik API** (optional — makes publik the default engine in your build):
 

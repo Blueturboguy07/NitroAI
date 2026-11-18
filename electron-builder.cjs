@@ -31,8 +31,12 @@ module.exports = {
   appId: "com.nitroai.app",
   productName: "NitroAI",
   copyright: "NitroAI contributors",
-  // Publishing is handled by the release workflow, not electron-builder.
-  publish: null,
+  // Publishing is handled by the release workflow, not electron-builder: the
+  // generic provider uploads nothing. electron-builder writes this into
+  // resources/app-update.yml, where the self-updater (electron/publik-updater.cjs,
+  // docs/updates.md) reads its cache folder name. The updater itself always
+  // asks this URL, and trusts a feed only with a valid publik signature.
+  publish: { provider: "generic", url: "https://publikhq.com/api/updates/nitroai/" },
   files: ["dist/**", "server/**", "electron/**", "!**/*.map"],
   extraMetadata: {
     main: "electron/main.mjs",
@@ -47,7 +51,12 @@ module.exports = {
   afterPack: "./scripts/afterPack.cjs",
   directories: { output: "release", buildResources: "build-resources" },
   mac: {
-    target: [{ target: "dmg", arch: ["arm64", "x64"] }],
+    // The zip is what an update installs (Squirrel.Mac reads only a zip); the
+    // dmg stays the download for a new install.
+    target: [
+      { target: "dmg", arch: ["arm64", "x64"] },
+      { target: "zip", arch: ["arm64", "x64"] },
+    ],
     category: "public.app-category.education",
     artifactName: "NitroAI-mac-${arch}.${ext}",
     // With a real cert: let electron-builder discover it from CSC_LINK and

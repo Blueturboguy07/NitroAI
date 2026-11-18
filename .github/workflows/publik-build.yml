@@ -1,13 +1,14 @@
 name: publik build
 
-# Builds the installers of a publik release (Mac .dmg for arm64 and x64,
-# Windows .exe, Linux .AppImage) with the same commands as release.yml and
-# uploads them as workflow artifacts. The Windows and Linux jobs then run the
+# Builds the installers of a publik release (Mac .dmg for arm64 and x64, plus
+# the Mac update zips, Windows .exe, Linux .AppImage) with the same commands as
+# release.yml and uploads them as workflow artifacts. The Windows and Linux jobs then run the
 # built app's publik self-test (.github/scripts/publik-self-test.cjs).
 #
 # It NEVER creates, changes or publishes a GitHub Release. The files are
 # downloaded, checked on a Mac (signature, notarization ticket, a real
-# launch) and attached to a draft release by hand.
+# launch) and attached to a draft release by hand. Then "Update feed"
+# (update-feed.yml) runs for the draft's tag, before the publik scan.
 
 on:
   push:
@@ -17,6 +18,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  PUBLIK_UPDATES: "0" # the launch tests do not check for updates (electron/publik-updater.cjs)
 
 concurrency:
   group: publik-build-${{ github.ref }}
@@ -135,11 +139,15 @@ jobs:
           done
           [ "$count" = 2 ]
 
-      - name: Upload the dmgs as workflow artifacts
+      # The zips hold the same stapled apps as the dmgs: the self-updater
+      # installs from them (docs/updates.md).
+      - name: Upload the dmgs and the update zips as workflow artifacts
         uses: actions/upload-artifact@v4
         with:
           name: nitroai-macos
-          path: release/*.dmg
+          path: |
+            release/*.dmg
+            release/*.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

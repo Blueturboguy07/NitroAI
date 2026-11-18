@@ -13,6 +13,7 @@
  */
 
 import { app, BrowserWindow, shell } from "electron";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { STABLE_PORTS, startServer } from "../server/httpServer.mjs";
@@ -27,6 +28,10 @@ import { ensureSignedIn, hasAppToken } from "../server/publik.mjs";
 import { electronGateUI } from "./publik-gate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Signed self-updates (publik-updater.cjs, docs/updates.md). The updater files
+// are CommonJS and are shared unchanged by every publik Electron app.
+const require = createRequire(import.meta.url);
+const { startUpdates } = require("./publik-updater.cjs");
 
 let mainWindow = null;
 let serverInfo = null; // { server, port, url }
@@ -125,6 +130,12 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Updates: checks publik's signed update feed at launch and every 24 h, and
+  // adds "Check for Updates…" to the menu (macOS: the NitroAI menu; Windows:
+  // Help). A test build started with PUBLIK_UPDATER_TEST runs the CI update
+  // proof and exits instead: nothing below starts.
+  if (startUpdates({ slug: "nitroai", appName: "NitroAI" }).testHook) return;
+
   // Every publik app opens with Sign in with publik. The gate window shows
   // until this computer is signed in, asks once how the app pays for AI, and
   // starts the usage counts (app_opened now, active_session every 30 minutes).
