@@ -444,7 +444,7 @@ for dmg in $MAC_DMGS; do
   case " $CDHASHES " in *" $arch=$cdhash "*) ok "$dmg holds the same app as NitroAI-mac-$arch.zip (CDHash $cdhash)" ;;
     *) die "$dmg holds another app than the $arch zip (CDHash $cdhash; zips:$CDHASHES)" ;; esac
   # The dmg's own signature: what Gatekeeper checks when a downloaded (quarantined) dmg is opened.
-  local fdv; fdv="$(codesign -dvv "$f" 2>&1 || true)"
+  fdv="$(codesign -dvv "$f" 2>&1 || true)"
   printf '%s\n' "$fdv" | grep -x "Authority=$DEV_ID" >/dev/null || die "$dmg is not code-signed by $DEV_ID (release.yml signs it before notarizing)"
   codesign --verify "$f" 2>/dev/null || die "$dmg: its code signature does not verify"
   assess="$(spctl -a -t open --context context:primary-signature -vv "$f" 2>&1 || true)"
