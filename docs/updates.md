@@ -89,11 +89,39 @@ therefore work in the app; `-l` is not needed. The trusted comment must name the
 
 ## Cut a release
 
-1. Set the new version in `package.json`. Commit.
-2. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`. `release.yml` builds, signs and notarizes the
-   mac dmgs and zips (arm64 and x64), the Windows installer and the AppImage, and publishes the release.
-   Then its **Update feed** job (`update-feed.yml`) adds `latest.yml`, `latest-mac.yml` and their `.sig`.
-3. Check that the release holds the four feed files.
+One command, on a Mac with `gh` logged in, from a clean `main`:
+
+```sh
+scripts/publik-release.sh 0.2.8
+```
+
+NitroAI signs in CI: the repo secrets hold the Developer ID certificate, the Apple notary login and the
+publik update key. The script does not sign on the Mac. It drives the CI and checks what comes out:
+
+| Step | What the script does |
+|---|---|
+| 1. Checks | macOS, `gh` logged in, branch `main`, clean tree, `main` = `origin/main`, the version is newer than `package.json` and every release, the tag is free. At least 1.5 GB free disk (`PUBLIK_RELEASE_MIN_FREE_GB`). |
+| 2. Bump | `package.json` and the two version fields of `package-lock.json`, one commit on `main`, then the tag `vX.Y.Z`. Pushes both. No force push. |
+| 3. CI | The tag starts `release.yml`: builds, signs with the Developer ID (hardened runtime, `build-resources/entitlements.mac.plist`, inner binaries first), notarizes and staples the apps and the dmgs, makes the zips, the Windows installer and the AppImage, and puts them on a **draft** release. Its feed job (`update-feed.yml`) adds `latest.yml`, `latest-mac.yml` and their `.sig`, signed with the update key. The script waits. A failed run: it runs the failed jobs again, once. A draft without its feed: it runs `update-feed.yml`. |
+| 4. Verify | Downloads every file of the draft back from GitHub, one at a time, and deletes each after its checks: exactly the 10 expected files; the feed signatures, with the app's own verifier and public key; feed version, `publikApp`, absolute URLs, sizes and sha512 = the files; GitHub's sha256 of each file; for each mac zip and the app in each dmg: Info.plist version and bundle ID, arch, `codesign --verify --deep --strict`, Developer ID authority and team, secure timestamp, hardened runtime (inner code too), the entitlements, the designated requirement, `spctl` "Notarized Developer ID", `stapler validate`, the publik app token in `app.asar`, not a test build; the same app (CDHash) in the zip and the dmg of each arch; each dmg stapled and accepted by `spctl`; the Windows installer's version; the app token in the build log of each OS. |
+| 5. Publish | Only when every check passed: publishes the draft as the latest release and checks that its files are public. |
+
+Any failed check stops the script before step 5: the release stays a draft. Fix the cause and run the same
+command again. It continues from where it stopped (a pushed bump, a pushed tag, a running or failed CI run,
+a draft without its feed). The script starts no app and prints no secret (the app token is checked, not
+printed). The log and the list of checks are in `$TMPDIR/publik-release-nitroai/vX.Y.Z/`.
+
+| Option | Effect |
+|---|---|
+| `--no-publish` | All steps, but the release stays a draft. |
+| `--verify-only` | Only step 4, for a release that exists (draft or public). |
+| `RELEASE_COMMIT_TRAILER` (env) | A line added to the bump commit message, e.g. a `Co-Authored-By:` trailer. |
+
+publik takes in new releases once a day, at 10:00 UTC. A release published before then is in the feed after
+the intake. Then prove it on real machines (next section).
+
+The Windows installer is not code-signed (no Windows certificate). The update key signs the feed, and the feed
+holds the installer's sha512.
 
 For a publik release (a draft that publik scans): build with `publik-build.yml`, check the files, then put
 ALL of them on the draft, the mac zips too. Run **Actions › Update feed** with the draft's tag
@@ -109,6 +137,37 @@ PUBLIK_UPDATE_KEY="$(security find-generic-password -s publik-update-key -a mann
 PUBLIK_UPDATE_KEY_PASSWORD="$(security find-generic-password -s publik-update-key -a mann-password -w)" \
 node scripts/publik-update-feed.cjs release --tag vX.Y.Z --app nitroai --repo Blueturboguy07/NitroAI
 ```
+
+## The live proof (a real update from the live feed)
+
+`.github/workflows/live-update-proof.yml` installs a released NitroAI the way a user does and lets it update
+itself from publik's live feed, on GitHub's runners: macOS Apple silicon, macOS Intel and Windows.
+
+```sh
+gh workflow run live-update-proof.yml -f from_tag=v0.2.7 -f expect_version=0.2.8
+```
+
+`expect_version` = the version of `from_tag`: the app must say "no update" and stay there. A newer
+`expect_version`: the app must download it by itself and run it after the restart question. One job answers
+**Restart Now**, one answers **Later** (then quits). The run stops at once when the live feed does not serve
+`expect_version`.
+
+| Check | macOS | Windows |
+|---|---|---|
+| Download `from_tag` from the GitHub release; hash = the release's | dmg, quarantined; `spctl` "Notarized Developer ID"; stapled | installer |
+| Install as a user does | a mouse drag of the NitroAI icon onto Applications in the dmg's Finder window; quarantine kept; macOS must not translocate it (a copy made any other way keeps quarantine flag 0x0080 and runs translocated, where it cannot update) | silent installer (per user) |
+| Permissions before | designated requirement; camera, microphone, screen capture, accessibility rows in the TCC databases, with the csreq of that requirement | — |
+| Start the normal way, no test hook, no feed override | LaunchServices (`open`); the first-launch Gatekeeper question is answered **Open** | the installed exe |
+| The app's own updater | log: the feed's signature OK; the downloaded file = the signed feed's sha512 | the same |
+| The answer | **Restart Now** / **Later** + quit, clicked with System Events | the same: a mouse click on the dialog button (found with Win32; the dialog is a task dialog) |
+| After | Info.plist version, the running process, its log, **Check for Updates…** clicked in the menu: "You’re up to date." with the version | exe and running process version, Apps list, log; **Help › Check for Updates…** (UI Automation): "You’re up to date." with the version |
+| Permissions after | designated requirement unchanged; `spctl`; the four TCC rows are still there, and the app satisfies the stored csreq of each (`codesign --verify -R`) | — |
+
+A runner cannot show a consent prompt. The csreq check is the check that tccd makes, so it is the proof that
+the update needs no new permission prompt. The sign-in gate gets a key that is not a real key: it does not
+create an install on publik for the runner, and nothing signs in. Each job uploads its assertions, the app's
+logs, screenshots, the TCC rows and the updater's cache as an artifact. The unit tests of the 24-hour check
+(fake timers) and of the menu handler are in `test/publik-updater-schedule.test.mjs`.
 
 ## Roll back
 

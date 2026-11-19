@@ -1,0 +1,166 @@
+# Live update proof: a RELEASED NitroAI, downloaded and installed as a user does it, updates itself from
+# publik's LIVE feed (https://publikhq.com/api/updates/nitroai/), on real GitHub runners:
+#   macOS arm64 (macos-latest), macOS Intel (macos-15-intel), Windows (windows-latest).
+#
+#   gh workflow run live-update-proof.yml -f from_tag=v0.2.7 -f expect_version=0.2.8
+#
+# from_tag:       the release to install first (its dmg / Windows installer, from the GitHub release).
+# expect_version: the version the app must run at the end. Equal to from_tag's version: the app must say
+#                 "no update" and stay there (this checks download, Gatekeeper, TCC rows, start, the feed
+#                 request and the menu item). Newer: the app must download it from the live feed by itself,
+#                 ask "Restart Now / Later", and run it after the answer. Each answer is its own job.
+# The run fails at once when publik's live feed does not serve expect_version.
+#
+# What each job checks: .github/scripts/live-proof-mac.sh and .github/scripts/live-proof-win.ps1 (the top
+# of each file). Every assertion is a PASS / FAIL line in assertions.txt (job summary and artifact), next
+# to the app's logs, screenshots, the TCC rows and the updater's cache. No step may continue on an error.
+#
+# The "unit" job runs the tests of the 24-hour check (fake timers) and of the "Check for Updates…" handler,
+# which the Windows runner cannot always click. The refused-feed cases (wrong signature, changed byte,
+# other identity) are in updater-proof.yml.
+name: Live update proof
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_tag:
+        description: Release to install first, e.g. v0.2.7
+        required: true
+        type: string
+      expect_version:
+        description: Version the app must run at the end, e.g. 0.2.8 (the from_tag version = "no update")
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-update-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  FROM_TAG: ${{ inputs.from_tag }}
+  EXPECT: ${{ inputs.expect_version }}
+  REPO: ${{ github.repository }}
+
+jobs:
+  plan:
+    name: Inputs and the live feed
+    runs-on: ubuntu-latest
+    outputs:
+      variants: ${{ steps.plan.outputs.variants }}
+    steps:
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$FROM_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::from_tag must look like v1.2.3"; exit 1; }
+          [[ "$EXPECT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::expect_version must look like 1.2.3"; exit 1; }
+          draft="$(gh api "repos/$REPO/releases/tags/$FROM_TAG" --jq .draft)" || { echo "::error::no published release $FROM_TAG"; exit 1; }
+          [ "$draft" = false ] || { echo "::error::$FROM_TAG is a draft"; exit 1; }
+          for f in latest-mac.yml latest.yml; do
+            echo "--- https://publikhq.com/api/updates/nitroai/$f"
+            curl -fsS "https://publikhq.com/api/updates/nitroai/$f" | tee "$RUNNER_TEMP/$f"
+            served="$(sed -n "s/^version: '\(.*\)'$/\1/p" "$RUNNER_TEMP/$f")"
+            [ "$served" = "$EXPECT" ] || { echo "::error::publik serves $f $served, not $EXPECT. Start this run when the feed serves $EXPECT."; exit 1; }
+          done
+          if [ "${FROM_TAG#v}" = "$EXPECT" ]; then
+            echo 'variants=["no-update"]' >> "$GITHUB_OUTPUT"
+            echo "From $FROM_TAG, expect $EXPECT: the app must stay on $EXPECT (no update)." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'variants=["restart","later"]' >> "$GITHUB_OUTPUT"
+            echo "From $FROM_TAG, expect $EXPECT: the app must update itself (answers: Restart Now, Later)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  unit:
+    name: Unit — 24-hour check and Check for Updates… handler
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npx vitest run test/publik-updater-schedule.test.mjs test/publik-update-verify.test.mjs test/publik-update-feed.test.mjs
+
+  macos:
+    name: macOS ${{ matrix.arch }} — ${{ matrix.variant }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+        variant: ${{ fromJSON(needs.plan.outputs.variants) }}
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: blakejs for the app's feed verifier (scripts/publik-update-feed.cjs verify)
+        run: |
+          npm install --no-save --no-package-lock --no-audit --no-fund --prefix "$RUNNER_TEMP/npm" blakejs@1.2.1
+          echo "NODE_PATH=$RUNNER_TEMP/npm/node_modules" >> "$GITHUB_ENV"
+      - name: Live proof (download, Gatekeeper, install, TCC, start, update, menu, TCC after)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCH: ${{ matrix.arch }}
+          VARIANT: ${{ matrix.variant }}
+          OUT: ${{ github.workspace }}/live-proof-out
+        run: .github/scripts/live-proof-mac.sh
+      - name: Summary
+        if: always()
+        run: |
+          { echo "### macOS ${{ matrix.arch }} — ${{ matrix.variant }}"; echo '```'; cat live-proof-out/assertions.txt 2>/dev/null || echo "(no assertions)"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-proof-macos-${{ matrix.arch }}-${{ matrix.variant }}
+          path: live-proof-out
+          if-no-files-found: warn
+          retention-days: 30
+
+  windows:
+    name: Windows — ${{ matrix.variant }}
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.plan.outputs.variants) }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: blakejs for the app's feed verifier (scripts/publik-update-feed.cjs verify)
+        run: |
+          npm install --no-save --no-package-lock --no-audit --no-fund --prefix "$env:RUNNER_TEMP\npm" blakejs@1.2.1
+          "NODE_PATH=$env:RUNNER_TEMP\npm\node_modules" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Live proof (download, install, start, update, check)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VARIANT: ${{ matrix.variant }}
+          OUT: ${{ github.workspace }}\live-proof-out
+        run: .github/scripts/live-proof-win.ps1
+      - name: Summary
+        if: always()
+        run: |
+          $a = if (Test-Path live-proof-out/assertions.txt) { Get-Content live-proof-out/assertions.txt } else { '(no assertions)' }
+          @("### Windows — ${{ matrix.variant }}", '```') + $a + @('```') | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-proof-windows-${{ matrix.variant }}
+          path: live-proof-out
+          if-no-files-found: warn
+          retention-days: 30

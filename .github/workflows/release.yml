@@ -5,9 +5,13 @@ name: Build desktop installers
 # Then the update feed (update-feed.yml): latest.yml / latest-mac.yml with
 # their signatures, made from the files on the release and signed with the
 # publik update key (docs/updates.md).
-# Trigger by pushing a version tag (e.g. `git tag v0.1.0 && git push --tags`),
-# or run manually from the Actions tab. Artifacts are attached to a GitHub
-# Release so the README's download links resolve to real files.
+# A version tag starts it. Cut a release with ONE command,
+# `scripts/publik-release.sh X.Y.Z` (docs/updates.md › Cut a release): it bumps
+# the version, pushes the tag, waits for this workflow, downloads every file of
+# the DRAFT release this workflow makes, checks them, and only then publishes
+# the release. This workflow never publishes: the release stays a draft until
+# the script's checks pass. It can also run manually from the Actions tab
+# (build only, no release).
 
 on:
   push:
@@ -31,8 +35,9 @@ jobs:
   # published: publishing creates the tag, the tag starts this workflow, and
   # the upload below would replace the checked files with fresh, unchecked
   # ones. So: files already there for the tag → build nothing, upload nothing.
-  # A plain `git push --tags` with no release yet builds and publishes as before.
-  # If the check itself fails, the jobs below do not run.
+  # A tag with no release yet (scripts/publik-release.sh pushes one) builds and
+  # puts the files on a draft release. If the check itself fails, the jobs
+  # below do not run.
   guard:
     runs-on: ubuntu-latest
     outputs:
@@ -160,7 +165,10 @@ jobs:
       # Observed on v0.2.1: the app validated, the dmg answered "does not have
       # a ticket stapled to it". Submitting the finished dmg is quick (its
       # contents are already notarized) and makes the download self-contained.
-      - name: Notarize and staple the dmg
+      # The dmg is signed with the Developer ID first: an unsigned dmg (v0.2.7)
+      # is notarized, but `spctl -a -t open --context context:primary-signature`
+      # rejects it ("no usable signature"). Signed, it is "Notarized Developer ID".
+      - name: Sign, notarize and staple the dmg
         if: matrix.os == 'macos-latest' && env.APPLE_ID != ''
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
@@ -169,7 +177,13 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          [ -n "${CSC_KEYCHAIN:-}" ] || { echo "::error::no signing keychain: the dmg cannot be signed"; exit 1; }
+          id="$(security find-identity -v -p codesigning "$CSC_KEYCHAIN" | awk '/"Developer ID Application/ { print $2; exit }')"
+          [ -n "$id" ] || { echo "::error::no Developer ID Application identity"; exit 1; }
           for dmg in release/*.dmg; do
+            echo "signing $dmg"
+            codesign --sign "$id" --keychain "$CSC_KEYCHAIN" --timestamp "$dmg"
+            codesign --verify --verbose=2 "$dmg"
             echo "notarizing $dmg"
             xcrun notarytool submit "$dmg" \
               --apple-id "$APPLE_ID" \
@@ -177,6 +191,8 @@ jobs:
               --team-id "$APPLE_TEAM_ID" --wait
             xcrun stapler staple "$dmg"
             xcrun stapler validate "$dmg"
+            spctl -a -t open --context context:primary-signature -vv "$dmg" 2>&1 | tee "$RUNNER_TEMP/spctl.txt"
+            grep -q 'source=Notarized Developer ID' "$RUNNER_TEMP/spctl.txt" || { echo "::error::Gatekeeper does not accept $dmg"; exit 1; }
           done
 
       - name: Upload installers as workflow artifacts
@@ -198,14 +214,18 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      - name: Publish GitHub Release
+      # A DRAFT: scripts/publik-release.sh downloads it back, checks every file
+      # and publishes it only when all checks pass.
+      - name: Put the files on a draft GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**/*
           generate_release_notes: true
+          draft: true
 
   # The signed update feed for this tag: latest.yml (Windows installer) and
-  # latest-mac.yml (the arm64 and x64 zips, then the dmgs), each with its .sig.
+  # latest-mac.yml (the arm64 and x64 zips, then the dmgs), each with its .sig,
+  # added to the draft.
   # It adds only the feed files that are missing and never replaces an
   # installer. It also runs when the guard found files already on the release
   # (a published publik draft), so a draft that missed "Update feed" gets it.
