@@ -357,8 +357,11 @@ check_app() { # app path, arch (arm64|x64), what -> prints the CDHash
   # Inner code (helpers, frameworks): the same Developer ID and the hardened runtime.
   local inner n=0
   while IFS= read -r inner; do
-    codesign -dvv "$inner" 2>&1 | grep -qx "Authority=$DEV_ID" || die "$what: $(basename "$inner") is not signed by $DEV_ID"
-    case "$inner" in *.app) codesign -dvv "$inner" 2>&1 | grep -q '(runtime)' || die "$what: $(basename "$inner") has no hardened runtime" ;; esac
+    # Read codesign's answer into a variable first: with pipefail, `codesign | grep -q` fails by chance when
+    # grep closes the pipe before codesign has written every line.
+    local idv; idv="$(codesign -dvv "$inner" 2>&1 || true)"
+    printf '%s\n' "$idv" | grep -x "Authority=$DEV_ID" >/dev/null || die "$what: $(basename "$inner") is not signed by $DEV_ID"
+    case "$inner" in *.app) printf '%s\n' "$idv" | grep '(runtime)' >/dev/null || die "$what: $(basename "$inner") has no hardened runtime" ;; esac
     n=$((n + 1))
   done < <(find "$app/Contents/Frameworks" -maxdepth 1 \( -name '*.app' -o -name '*.framework' \))
   [ "$n" -gt 0 ] || die "$what: no inner code found"
