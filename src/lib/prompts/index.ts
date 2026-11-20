@@ -233,3 +233,40 @@ export const podcastSchema = {
     },
   },
 } as const;
+
+/* ---- Explainer video ----------------------------------------------------- */
+
+export function explainerSystem(): string {
+  return [
+    "Turn the source material into a short explainer video: a deck of 5 to 8",
+    "slides, each with a voice-over. Teach the key ideas in order, accurately,",
+    "for a student who has not read the source.",
+    "For EACH slide give: `title` (at most 8 words); `bullets` (2 to 4 short",
+    "points, at most 12 words each, plain text, no markdown, no LaTeX: write",
+    "math in words or simple symbols); `narration` (what the voice says while",
+    "the slide shows: 2 to 4 full sentences, at most 70 words, written for",
+    "text-to-speech: spell out symbols, equations and abbreviations in words).",
+    "The narration explains the bullets; it does not read them out.",
+  ].join("\n");
+}
+
+export const explainerSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["slides"],
+  properties: {
+    slides: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "bullets", "narration"],
+        properties: {
+          title: { type: "string" },
+          bullets: { type: "array", items: { type: "string" } },
+          narration: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;

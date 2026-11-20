@@ -393,6 +393,7 @@ function Group({
                   // A trimmed lecture video goes with its note.
                   const lecture = lectureOf(n);
                   if (lecture) void discardLecture(lecture.id);
+                  if (n.explainer?.videoId) void discardLecture(n.explainer.videoId);
                   await repo?.deleteNote(n.id);
                   bump();
                 }}

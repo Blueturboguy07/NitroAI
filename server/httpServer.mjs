@@ -6,6 +6,7 @@
  *   GET  /api/local/status         → Ollama provisioning state
  *   POST /api/local/setup          → SSE stream that installs/starts/pulls Ollama
  *   *    /api/lecture/*            → "Trim the solve-time gaps": download, cut, play (see lecture.mjs)
+ *   POST /api/explainer/render     → slides + voice → one .mp4 (see explainer.mjs)
  *   *    /api/publik/*              → publik API credential + streaming proxy (see publikProxy.mjs)
  *
  * Every /api/* request passes ONE guard first (localGuard.mjs): Host, the
@@ -28,6 +29,7 @@ import { handleFetchPage } from "./fetchPage.mjs";
 import { refuseLocalRequest, sendRefused } from "./localGuard.mjs";
 import { checkYoutubeLink } from "./youtubeLink.mjs";
 import { createLectureHandler } from "./lecture.mjs";
+import { createExplainerHandler } from "./explainer.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -118,6 +120,7 @@ async function handleApi(req, res, url, opts) {
   if (p === "/api/fetch-page") return handleFetchPage(req, res, url, opts.fetchPage);
 
   if (await opts.lecture(req, res, url)) return;
+  if (await opts.explainer(req, res, url)) return;
 
   if (p === "/api/youtube-extract") {
     // POST: on first use it downloads yt-dlp, and it always downloads media.
@@ -200,12 +203,14 @@ export const STABLE_PORTS = [41763, 41764, 41765, 41766, 41767, 41768, 41769, 41
    `fetchPage` — { maxBytes?, timeoutMs?, resolve?, allowHosts? } for
    /api/fetch-page (tests only; see fetchPage.mjs).
    `mediaDir` — where the trimmed lecture videos are kept; `lecture` —
-   { ffmpeg?, ytdlp?, trim? } for /api/lecture/* (tests only; see lecture.mjs). */
-export function startServer({ distDir, binDir, mediaDir, port = 0, ports, host = "127.0.0.1", publik = {}, fetchPage = {}, lecture = {} } = {}) {
+   { ffmpeg?, ytdlp?, trim? } for /api/lecture/* (tests only; see lecture.mjs);
+   `explainer` — { ffmpeg?, render? } for /api/explainer/* (tests only). */
+export function startServer({ distDir, binDir, mediaDir, port = 0, ports, host = "127.0.0.1", publik = {}, fetchPage = {}, lecture = {}, explainer = {} } = {}) {
   const resolvedDist = distDir ?? path.join(__dirname, "..", "dist");
   const candidates = Array.isArray(ports) && ports.length ? ports : [port];
   const handlePublik = createPublikHandler(publik);
   const handleLecture = createLectureHandler({ ...lecture, binDir, mediaDir });
+  const handleExplainer = createExplainerHandler({ ...explainer, mediaDir });
   // Startup: the old unversioned bin/yt-dlp (v0.2.1, v0.2.2) is never run.
   // Delete it now (see ytdlp.mjs).
   if (binDir) cleanOldYtdlp(binDir);
@@ -216,7 +221,7 @@ export function startServer({ distDir, binDir, mediaDir, port = 0, ports, host =
       const refused = refuseLocalRequest(req, url.pathname, server.address()?.port);
       if (refused) return sendRefused(res, refused);
       const appOrigin = `http://${host}:${server.address()?.port ?? candidates[0]}`;
-      handleApi(req, res, url, { binDir, appOrigin, publik: handlePublik, fetchPage, lecture: handleLecture }).catch((err) =>
+      handleApi(req, res, url, { binDir, appOrigin, publik: handlePublik, fetchPage, lecture: handleLecture, explainer: handleExplainer }).catch((err) =>
         sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" }),
       );
       return;

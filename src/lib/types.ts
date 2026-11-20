@@ -31,6 +31,8 @@ export interface Note {
   /* Optional origin metadata (url, filename, duration). */
   sourceMeta?: Record<string, string | number | undefined>;
   blocks: Block[];
+  /* The note's explainer video, when one was made (lib/explainer). */
+  explainer?: Explainer;
   folderId?: ID;
   createdAt: number;
   updatedAt: number;
@@ -127,6 +129,24 @@ export interface Podcast {
   script: PodcastLine[];
   /* Object URL / data URL / file path of rendered audio, when available. */
   audioUrl?: string;
+  createdAt: number;
+}
+
+/* ---- Explainer video ---------------------------------------------------- */
+
+export interface ExplainerSlide {
+  title: string;
+  /* 2 to 4 short points shown on the slide. */
+  bullets: string[];
+  /* What the voice says while the slide shows. */
+  narration: string;
+}
+
+export interface Explainer {
+  slides: ExplainerSlide[];
+  /* The rendered video on the local server (GET /api/lecture/video?id=). */
+  videoId?: string;
+  seconds?: number;
   createdAt: number;
 }
 

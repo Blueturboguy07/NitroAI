@@ -56,6 +56,10 @@ A class video often has long stretches where the teacher says "take a few minute
 - **It needs [ffmpeg](https://ffmpeg.org) on your computer** (Mac: `brew install ffmpeg`; Windows: `winget install ffmpeg`; Linux: `sudo apt install ffmpeg`). NitroAI does not download ffmpeg. Without it, the option tells you so and the usual YouTube notes still work.
 - The video stays on your computer (the app's data folder, `lectures/`). It is deleted when you delete the note.
 
+### Explainer video
+
+On a note, the **Explainer video** view makes a short slide video with a voice from the notes (for example from a PDF). It has two steps. **Write the script** is one call on the fast model: 5 to 8 slides, each with a title, 2 to 4 points and a voice-over. **Make the video** records the voice with the app's text-to-speech (the same call as the podcast), draws the slides, and joins them with ffmpeg on your computer. The view shows how many characters the voice will read before you start it; one video reads at most 4,800 characters. It needs ffmpeg, and publik API or an OpenAI key for the voice.
+
 ### Three ways to run the AI
 
 You pick one on first launch (and can switch any time in Settings):
@@ -119,6 +123,7 @@ server/         the local server the desktop shell runs
   ytdlp.mjs       yt-dlp download + caption/audio extraction
   lecture.mjs     /api/lecture/*: "Trim the solve-time gaps" (yt-dlp download, ffmpeg silencedetect + cut)
   lecturePlan.mjs the cut planner (pure): silences + caption times → what to keep
+  explainer.mjs   /api/explainer/render: slide pictures + voice clips → one .mp4 (ffmpeg)
   ollama.mjs      Ollama install / serve / model-pull lifecycle
 electron/       the desktop shell (shows the publik gate, starts the server, opens the window)
   publik-gate.mjs  the gate window the publik module shows before the app's window
