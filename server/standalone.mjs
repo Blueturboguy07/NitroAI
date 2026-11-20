@@ -13,6 +13,7 @@ const port = Number(process.env.PORT) || 4180;
 const { url } = await startServer({
   distDir: path.join(__dirname, "..", "dist"),
   binDir: path.join(__dirname, "..", "node_modules", ".cache", "nitroai"),
+  mediaDir: path.join(__dirname, "..", "node_modules", ".cache", "nitroai-lectures"),
   port,
   // `PUBLIK_APP_TOKEN=pat_… npm run serve` smokes the whole publik path
   // (provision → proxied chat) without a packaged build: the publik module

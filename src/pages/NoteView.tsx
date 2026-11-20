@@ -21,6 +21,7 @@ import Assistant from "../components/Assistant";
 import FlashcardsView from "../components/FlashcardsView";
 import QuizView from "../components/QuizView";
 import PodcastPanel from "../components/PodcastPanel";
+import LectureVideo from "../components/LectureVideo";
 import {
   downloadText,
   exportDocxHtml,
@@ -178,6 +179,8 @@ function EditorView({
             )}
           </div>
         </div>
+        {/* "Trim the solve-time gaps": the shorter video, above its notes. */}
+        <LectureVideo note={note} />
         <div className="mx-6 mb-6 flex-1 overflow-y-auto rounded-card border border-edge bg-card p-8 shadow-soft">
           <BlockEditor key={note.id} blocks={note.blocks} onChange={onBlocks} />
         </div>

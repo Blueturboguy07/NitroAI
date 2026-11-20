@@ -22,6 +22,7 @@ import { createNoteFromSources } from "../lib/generation/pipeline";
 import { describeError, type ShownError } from "../lib/publik";
 import { ErrorNotice } from "../components/PublikNotice";
 import { exportMarkdown, downloadText } from "../lib/export";
+import { discardLecture, lectureOf } from "../lib/ingest/lecture";
 import { uuid, now } from "../lib/ids";
 import type { Folder, Job, Note, SourceKind } from "../lib/types";
 
@@ -72,6 +73,8 @@ export default function Dashboard() {
   const [job, setJob] = useState<Job | null>(null);
   const [err, setErr] = useState<ShownError | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  /* Stops a running video trim (the only job long enough to need it). */
+  const [stopJob, setStopJob] = useState<(() => void) | null>(null);
 
   useEffect(() => {
     repo?.listNotes().then(setNotes);
@@ -137,6 +140,8 @@ export default function Dashboard() {
       return;
     }
     setErr(null);
+    const stop = new AbortController();
+    if (inputs.some((i) => i.trimGaps)) setStopJob(() => () => stop.abort());
     try {
       const id = await createNoteFromSources({
         repo,
@@ -144,6 +149,7 @@ export default function Dashboard() {
         inputs,
         language: prefs.language,
         onProgress: setJob,
+        signal: stop.signal,
       });
       setModal(null);
       setJob(null);
@@ -152,7 +158,10 @@ export default function Dashboard() {
     } catch (e) {
       setJob(null);
       setModal(null);
-      setErr(describeError(e, "Generation failed."));
+      // The user stopped it: no error to show.
+      if (!stop.signal.aborted) setErr(describeError(e, "Generation failed."));
+    } finally {
+      setStopJob(null);
     }
   }
 
@@ -330,7 +339,7 @@ export default function Dashboard() {
           onClose={() => setModal(null)}
         />
       )}
-      {job && <JobOverlay job={job} />}
+      {job && <JobOverlay job={job} onStop={job.stage === "ingest" ? stopJob : null} />}
       {folderModalOpen && (
         <NewFolderModal onCreate={createFolder} onClose={() => setFolderModalOpen(false)} />
       )}
@@ -381,6 +390,9 @@ function Group({
                   downloadText(`${n.title}.md`, exportMarkdown(n), "text/markdown")
                 }
                 onDelete={async () => {
+                  // A trimmed lecture video goes with its note.
+                  const lecture = lectureOf(n);
+                  if (lecture) void discardLecture(lecture.id);
                   await repo?.deleteNote(n.id);
                   bump();
                 }}
@@ -541,7 +553,7 @@ function Empty({ title, sub }: { title: string; sub: string }) {
   );
 }
 
-function JobOverlay({ job }: { job: Job }) {
+function JobOverlay({ job, onStop }: { job: Job; onStop?: (() => void) | null }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="w-[440px] max-w-[90vw] rounded-modal bg-card p-8 shadow-modal">
@@ -576,6 +588,14 @@ function JobOverlay({ job }: { job: Job }) {
               </li>
             ))}
           </ul>
+        )}
+        {onStop && (
+          <button
+            onClick={onStop}
+            className="mt-6 w-full rounded-xl border border-edge bg-panel py-2.5 text-sm font-semibold text-ink-dim hover:bg-card-hover hover:text-ink"
+          >
+            Stop
+          </button>
         )}
       </div>
     </div>

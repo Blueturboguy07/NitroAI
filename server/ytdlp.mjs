@@ -23,7 +23,7 @@
  *     link, so a link can never be read as an option.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -190,7 +190,7 @@ export function vttToText(vtt) {
 
 /* One yt-dlp run. The file is checked against the pin first (a changed file
    is deleted and refused), and the safe options always come first. */
-async function runYtdlp(bin, pin, args) {
+async function runYtdlp(bin, pin, args, signal) {
   if (!(await isVerified(bin, pin))) {
     return { ok: false, stdout: "", stderr: "yt-dlp did not match its SHA-256 and was removed. Try again." };
   }
@@ -198,6 +198,7 @@ async function runYtdlp(bin, pin, args) {
     const { stdout, stderr } = await execFileP(bin, [...YTDLP_SAFE_ARGS, ...args], {
       timeout: RUN_TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
+      signal,
     });
     return { ok: true, stdout, stderr };
   } catch (err) {
@@ -246,4 +247,95 @@ export async function extractYoutube(url, binDir, opts = {}) {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/* ---- "Trim the solve-time gaps" (server/lecture.mjs) --------------------- */
+
+/* The video file for a lecture: at most 720p (enough to read a board, and
+   quick to cut), mp4 when YouTube has it. */
+export const LECTURE_FORMAT =
+  "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/bv*[height<=720]+ba/b[height<=720]/b";
+export const LECTURE_MAX_SECONDS = 4 * 60 * 60;
+const DOWNLOAD_TIMEOUT_MS = 45 * 60 * 1000;
+const VIDEO_EXTS = new Set(["mp4", "mkv", "webm", "mov", "m4v"]);
+
+/* Download a YouTube video file and its English captions into `outDir` (the
+   caller's own temp folder; the caller deletes it). The same rules as
+   extractYoutube: the pinned, checked yt-dlp only, the safe options first,
+   and the link as ONE argument after "--". No shell.
+   Returns { videoPath, title, durationSeconds, vtt }; vtt is null when the
+   video has no English captions.
+   `opts`: ffmpegPath (yt-dlp joins the video and sound files with it),
+   signal (stops the download), onProgress(0..1); tests only: pin, fetchImpl. */
+export async function downloadLecture(url, binDir, outDir, opts = {}) {
+  const { ffmpegPath, signal, onProgress } = opts;
+  const pin = opts.pin ?? ytdlpPin();
+  const bin = await ensureYtdlp(binDir, opts);
+  const outTmpl = path.join(outDir, "video.%(ext)s");
+
+  const info = await runYtdlp(bin, pin, ["--no-warnings", "--no-playlist", "--print", "title", "--print", "duration", "--", url], signal);
+  signal?.throwIfAborted();
+  if (!info.ok) throw new Error(`yt-dlp failed: ${info.stderr.trim().slice(0, 400)}`);
+  const lines = info.stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+  const durationSeconds = lines.length > 1 && Number.isFinite(Number(lines[lines.length - 1])) ? Number(lines[lines.length - 1]) : null;
+  const title = lines[0] || null;
+  if (durationSeconds !== null && durationSeconds > LECTURE_MAX_SECONDS) {
+    throw new Error("This video is longer than 4 hours. NitroAI trims videos of up to 4 hours.");
+  }
+
+  // Captions: the times of the teacher's words. A failure here is not the
+  // end: the video is then cut on silence alone.
+  await runYtdlp(bin, pin, [
+    "--no-warnings", "--no-playlist", "--skip-download", "--write-auto-sub", "--write-sub",
+    "--sub-langs", "en.*", "--sub-format", "vtt", "-o", outTmpl, "--", url,
+  ], signal);
+  signal?.throwIfAborted();
+  let vtt = null;
+  for (const entry of fs.readdirSync(outDir).sort()) {
+    if (!entry.endsWith(".vtt")) continue;
+    const text = fs.readFileSync(path.join(outDir, entry), "utf8");
+    if (vttToText(text).split(/\s+/).length > 5) {
+      vtt = text;
+      break;
+    }
+  }
+
+  if (!(await isVerified(bin, pin))) throw new Error("yt-dlp did not match its SHA-256 and was removed. Try again.");
+  const args = [
+    ...YTDLP_SAFE_ARGS, "--no-warnings", "--no-playlist", "--newline", "--progress",
+    "--progress-template", "download:nitro-progress %(progress._percent_str)s",
+    "-f", LECTURE_FORMAT, "--merge-output-format", "mp4",
+    ...(ffmpegPath ? ["--ffmpeg-location", ffmpegPath] : []),
+    "-o", outTmpl, "--", url,
+  ];
+  await new Promise((resolve, reject) => {
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], signal, timeout: DOWNLOAD_TIMEOUT_MS, windowsHide: true });
+    let err = "";
+    // yt-dlp counts 0-100% for the picture file, then again for the (small)
+    // sound file. One line that only goes up: 90% picture, 10% sound.
+    let files = 0;
+    let lastPct = 0;
+    child.stdout.setEncoding("utf8").on("data", (text) => {
+      for (const m of text.matchAll(/nitro-progress\s+([\d.]+)%/g)) {
+        const pct = Math.min(100, Number(m[1]));
+        if (pct < lastPct) files += 1;
+        lastPct = pct;
+        onProgress?.(files === 0 ? (pct / 100) * 0.9 : Math.min(1, 0.9 + (pct / 100) * 0.1));
+      }
+    });
+    child.stderr.setEncoding("utf8").on("data", (text) => {
+      err = (err + text).slice(-4000);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`yt-dlp failed: ${err.trim().slice(0, 400) || `exit ${code}`}`));
+    });
+  });
+
+  const video = fs
+    .readdirSync(outDir)
+    .find((name) => name.startsWith("video.") && VIDEO_EXTS.has(path.extname(name).slice(1).toLowerCase()));
+  if (!video) throw new Error("yt-dlp did not save a video file for this link.");
+  return { videoPath: path.join(outDir, video), title, durationSeconds, vtt };
 }

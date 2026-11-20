@@ -22,6 +22,8 @@ import { extractYoutube } from "./server/ytdlp.mjs";
 import { refuseLocalRequest, sendRefused } from "./server/localGuard.mjs";
 // @ts-expect-error — plain-JS Node module, no type declarations
 import { checkYoutubeLink } from "./server/youtubeLink.mjs";
+// @ts-expect-error — plain-JS Node module, no type declarations
+import { createLectureHandler } from "./server/lecture.mjs";
 
 const CACHE_DIR = path.join(process.cwd(), "node_modules", ".cache", "nitroai");
 const MAX_BODY = 16 * 1024;
@@ -52,8 +54,22 @@ function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
 }
 
 function middleware(): Connect.NextHandleFunction {
+  // "Trim the solve-time gaps": the same handler as the desktop server.
+  const handleLecture: (req: IncomingMessage, res: ServerResponse, url: URL) => Promise<boolean> = createLectureHandler({
+    binDir: CACHE_DIR,
+    mediaDir: path.join(CACHE_DIR, "..", "nitroai-lectures"),
+  });
   return (req, res: ServerResponse, next) => {
     const reqUrl = new URL(req.url ?? "/", "http://localhost");
+    if (reqUrl.pathname.startsWith("/api/lecture/")) {
+      const refused = refuseLocalRequest(req, reqUrl.pathname, req.socket.localPort, [process.env.TAURI_DEV_HOST]);
+      if (refused) return sendRefused(res, refused);
+      handleLecture(req, res, reqUrl).catch(() => {
+        if (!res.headersSent) res.statusCode = 500;
+        res.end();
+      });
+      return;
+    }
     if (reqUrl.pathname !== "/api/youtube-extract") return next();
 
     const send = (status: number, body: unknown) => {

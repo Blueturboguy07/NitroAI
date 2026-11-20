@@ -10,7 +10,10 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import CreateNoteModal from "./CreateNoteModal";
 import type { Engine } from "../lib/engine/types";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function fakeEngine(transcription: boolean): Engine {
   return {
@@ -200,5 +203,92 @@ describe("CreateNoteModal — the shared check (round 4)", () => {
     expect(generate).toBeDisabled();
     fireEvent.click(generate);
     expect(onGenerate).not.toHaveBeenCalled();
+  });
+});
+
+/* "Trim the solve-time gaps": one option on the link window, off by default,
+   for YouTube links only. The local server is a stand-in (fetch). */
+describe("CreateNoteModal: Trim the solve-time gaps", () => {
+  const YT = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+
+  function status(body: unknown, type = "application/json") {
+    const paths: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        paths.push(path);
+        return new Response(typeof body === "string" ? body : JSON.stringify(body), { headers: { "content-type": type } });
+      }),
+    );
+    return paths;
+  }
+
+  function open(onGenerate = vi.fn()) {
+    render(<CreateNoteModal source="link" engine={fakeEngine(true)} onGenerate={onGenerate} onClose={() => {}} />);
+    return {
+      onGenerate,
+      link: screen.getByPlaceholderText(/Paste a website or YouTube link/),
+      box: screen.getByRole("checkbox", { name: /Trim the solve-time gaps/ }),
+      go: screen.getByRole("button", { name: "Generate Notes" }),
+    };
+  }
+
+  it("is off by default, and a YouTube link without it goes the usual way", () => {
+    const paths = status({ ffmpeg: true, message: null });
+    const { onGenerate, link, box, go } = open();
+    expect(box).not.toBeChecked();
+    expect(box).toBeDisabled(); // no link yet
+    fireEvent.change(link, { target: { value: YT } });
+    expect(box).toBeEnabled();
+    fireEvent.click(go);
+    expect(onGenerate).toHaveBeenCalledWith([{ kind: "youtube", url: YT }]);
+    expect(paths).toEqual([]); // the server is not asked until the box is ticked
+  });
+
+  it("ticked: the link is sent with trimGaps", async () => {
+    const paths = status({ ffmpeg: true, message: null });
+    const { onGenerate, link, box, go } = open();
+    fireEvent.change(link, { target: { value: YT } });
+    fireEvent.click(box);
+    expect(box).toBeChecked();
+    await vi.waitFor(() => expect(paths).toEqual(["/api/lecture/status"]));
+    fireEvent.click(go);
+    expect(onGenerate).toHaveBeenCalledWith([{ kind: "youtube", url: YT, trimGaps: true }]);
+  });
+
+  it("a website link cannot be trimmed: the box stays off and the link goes as a page", () => {
+    status({ ffmpeg: true, message: null });
+    const { onGenerate, link, box, go } = open();
+    fireEvent.change(link, { target: { value: YT } });
+    fireEvent.click(box);
+    fireEvent.change(link, { target: { value: "https://en.wikipedia.org/wiki/Limit" } });
+    expect(box).toBeDisabled();
+    expect(box).not.toBeChecked();
+    fireEvent.click(go);
+    expect(onGenerate).toHaveBeenCalledWith([{ kind: "url", url: "https://en.wikipedia.org/wiki/Limit" }]);
+  });
+
+  it("no ffmpeg: the window says what to install, and Generate stays off", async () => {
+    status({ ffmpeg: false, message: "Trimming a video needs ffmpeg on this computer. Install it, then try again." });
+    const { onGenerate, link, box, go } = open();
+    fireEvent.change(link, { target: { value: YT } });
+    fireEvent.click(box);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Trimming a video needs ffmpeg on this computer.");
+    expect(go).toBeDisabled();
+    fireEvent.click(go);
+    expect(onGenerate).not.toHaveBeenCalled();
+    // Unticked: the usual YouTube notes still work.
+    fireEvent.click(box);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(go).toBeEnabled();
+  });
+
+  it("no local server (a static site): says that the desktop app is needed", async () => {
+    status("<html></html>", "text/html");
+    const { link, box, go } = open();
+    fireEvent.change(link, { target: { value: YT } });
+    fireEvent.click(box);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/needs the NitroAI desktop app/);
+    expect(go).toBeDisabled();
   });
 });
