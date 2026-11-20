@@ -35,9 +35,10 @@ export const COLLECTIONS = {
 } as const;
 
 /* High-level repository over a Store. This is what generation code and the UI
-   use; it never touches the raw Store directly. */
+   use; it never touches the raw Store directly. `store` is readable for the
+   library backup only (lib/backup.ts), which copies whole collections. */
 export class Repo {
-  constructor(private store: Store) {}
+  constructor(readonly store: Store) {}
 
   // notes
   getNote = (id: string) => this.store.get<Note>(COLLECTIONS.notes, id);

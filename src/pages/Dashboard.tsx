@@ -7,6 +7,7 @@ import {
   FileText,
   Folder as FolderIcon,
   FolderPlus,
+  History,
   Link2,
   Loader2,
   MoreVertical,
@@ -24,6 +25,16 @@ import { ErrorNotice } from "../components/PublikNotice";
 import { exportMarkdown, downloadText } from "../lib/export";
 import { uuid, now } from "../lib/ids";
 import type { Folder, Job, Note, SourceKind } from "../lib/types";
+import {
+  backupCopy,
+  fetchBackupInfo,
+  formatWhen,
+  getBackupState,
+  patchBackupState,
+  restoreLibrary,
+  restoreSentence,
+  type BackupInfo,
+} from "../lib/libraryBackup";
 
 const creationCards: {
   source: NoteSource | "blank";
@@ -72,11 +83,46 @@ export default function Dashboard() {
   const [job, setJob] = useState<Job | null>(null);
   const [err, setErr] = useState<ShownError | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  /* The reinstall / second-computer path: no notes here, and a backup in the
+     person's publik account. Works with the backup setting off. */
+  const [loaded, setLoaded] = useState(false);
+  const [offer, setOffer] = useState<BackupInfo | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreNote, setRestoreNote] = useState<{ text: string; bad: boolean } | null>(null);
+  const askedBackup = useRef(false);
 
   useEffect(() => {
-    repo?.listNotes().then(setNotes);
+    repo?.listNotes().then((n) => {
+      setNotes(n);
+      setLoaded(true);
+    });
     repo?.listFolders().then(setFolders);
   }, [repo, version]);
+
+  useEffect(() => {
+    if (!loaded || askedBackup.current) return;
+    askedBackup.current = true; // one question per visit of the dashboard
+    if (notes.length > 0) return;
+    let alive = true;
+    void fetchBackupInfo().then((info) => {
+      if (alive && info?.exists && info.id !== getBackupState().dismissedRestoreId) setOffer(info);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [loaded, notes.length]);
+
+  async function restoreFromAccount() {
+    if (!repo || restoring) return;
+    setRestoring(true);
+    setRestoreNote(null);
+    const r = await restoreLibrary(repo.store);
+    setRestoring(false);
+    if (!r.ok) return setRestoreNote({ text: r.message, bad: true });
+    setOffer(null);
+    setRestoreNote({ text: restoreSentence(r.result), bad: false });
+    bump();
+  }
 
   async function createFolder(name: string) {
     if (!repo) return;
@@ -211,6 +257,55 @@ export default function Dashboard() {
         <div className="mt-4">
           <ErrorNotice err={err} />
         </div>
+      )}
+
+      {offer && notes.length === 0 && (
+        <div
+          role="region"
+          aria-label="Restore your library"
+          className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-3 rounded-card border-2 border-accent bg-card p-4 shadow-soft"
+        >
+          <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-accent-softer">
+            <History className="size-5 text-accent" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="font-display font-bold">
+              Your library is saved in your publik account
+              {offer.created_at && formatWhen(Date.parse(offer.created_at)) ? ` (${formatWhen(Date.parse(offer.created_at))})` : ""}. Restore it?
+            </p>
+            <p className="text-sm text-ink-faint">{backupCopy.restoreHint} You can also restore later in Settings.</p>
+            {restoreNote?.bad && (
+              <p role="alert" className="mt-1 text-xs font-semibold text-danger-ink">
+                {restoreNote.text}
+              </p>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={restoreFromAccount}
+            disabled={restoring}
+            className="inline-flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-bold text-white hover:bg-accent-hover disabled:opacity-60"
+          >
+            {restoring && <Loader2 className="size-4 animate-spin" />}
+            {restoring ? backupCopy.restoring : "Restore"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (offer.id) patchBackupState({ dismissedRestoreId: offer.id });
+              setOffer(null);
+            }}
+            disabled={restoring}
+            className="rounded-xl border border-edge bg-panel px-4 py-2 text-sm font-semibold shadow-soft hover:bg-card-hover disabled:opacity-60"
+          >
+            Not now
+          </button>
+        </div>
+      )}
+      {!offer && restoreNote && !restoreNote.bad && (
+        <p role="status" className="mt-4 text-sm font-semibold text-ink-dim">
+          {restoreNote.text}
+        </p>
       )}
 
       <div className="mt-8 flex items-center justify-between">

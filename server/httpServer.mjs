@@ -5,7 +5,8 @@
  *   GET  /api/fetch-page?url=      → a web page's bytes for the link reader (see fetchPage.mjs)
  *   GET  /api/local/status         → Ollama provisioning state
  *   POST /api/local/setup          → SSE stream that installs/starts/pulls Ollama
- *   *    /api/publik/*              → publik API credential + streaming proxy (see publikProxy.mjs)
+ *   *    /api/publik/*              → publik API credential + streaming proxy (see publikProxy.mjs),
+ *                                    and the library backup under /api/publik/backup (see publikBackup.mjs)
  *
  * Every /api/* request passes ONE guard first (localGuard.mjs): Host, the
  * app-only header, Sec-Fetch-Site, Origin and Content-Type. A GET never

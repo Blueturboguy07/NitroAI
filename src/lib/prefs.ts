@@ -13,6 +13,7 @@ const defaults: EnginePrefs = {
   localModel: "",
   language: "English",
   publikDisclosureAck: 0,
+  libraryBackup: false,
 };
 
 export function getEnginePrefs(): EnginePrefs {
