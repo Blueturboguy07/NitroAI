@@ -5,6 +5,7 @@ import type { SourceKind } from "../types";
 import { ingestText, ingestTextFile, titleFromFilename } from "./text";
 import { ingestUrl } from "./url";
 import { ingestYoutube } from "./youtube";
+import { ingestLectureTrim, type TrimHooks } from "./lecture";
 import { ingestPdf } from "./pdf";
 import { ingestDocx } from "./docx";
 import { audioBlobProblem, checkDocument, documentKind, readSample, refusedFileMessage, type DocumentKind } from "./fileTypes";
@@ -15,6 +16,9 @@ export interface IngestInput {
   url?: string;
   file?: File | Blob;
   filename?: string;
+  /* YouTube only: "Trim the solve-time gaps". The local server also makes a
+     shorter video with the long work-alone stretches cut out (lecture.ts). */
+  trimGaps?: boolean;
 }
 
 export interface IngestResult {
@@ -51,7 +55,9 @@ function withFilenameFallback(result: IngestResult, filename?: string): IngestRe
   };
 }
 
-export async function ingest(input: IngestInput): Promise<IngestResult> {
+/* `hooks` (progress line, stop signal) are used by the one long step: the
+   video trim. */
+export async function ingest(input: IngestInput, hooks: TrimHooks = {}): Promise<IngestResult> {
   switch (input.kind) {
     case "blank":
       return { text: "" };
@@ -76,6 +82,7 @@ export async function ingest(input: IngestInput): Promise<IngestResult> {
 
     case "youtube": {
       if (!input.url) throw new Error("A YouTube URL is required.");
+      if (input.trimGaps) return ingestLectureTrim(input.url, hooks);
       return ingestYoutube(input.url);
     }
 

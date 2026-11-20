@@ -6,6 +6,7 @@ import { EngineError, isFiltered, isIncomplete } from "../engine/types";
 import type {
   Block,
   ChatTurn,
+  ExplainerSlide,
   Flashcard,
   Note,
   Podcast,
@@ -18,6 +19,8 @@ import { newCardState } from "../study/fsrs";
 import { capTokens, chunkByTokens, estimateTokens } from "./chunk";
 import {
   chatSystem,
+  explainerSchema,
+  explainerSystem,
   flashcardsSchema,
   flashcardsSystem,
   noteReduceSystem,
@@ -63,6 +66,14 @@ export const STUDY_MAX_TOKENS = 16000; // flashcards and quiz (JSON)
    about 30 tokens at most. The caps leave about 2.5 times the measured
    script length (short = 12 turns ≈ 2,200 tokens). */
 export const PODCAST_MAX_TOKENS = { short: 6000, medium: 10000, long: 16000 } as const;
+/* The explainer video's script: 5 to 8 slides of a title, 2 to 4 bullets and
+   at most 70 words of voice, about 1,600 tokens of JSON. The cap leaves
+   2.5 times that, as for the podcast. */
+export const EXPLAINER_MAX_TOKENS = 4000;
+/* What one explainer may hold, whatever the model returns. The voice is
+   paid per character, so narrationChars × slides is the most one video's
+   voice can cost: 8 × 600 = 4,800 characters. */
+export const EXPLAINER_LIMITS = { slides: 8, bullets: 4, titleChars: 80, bulletChars: 120, narrationChars: 600 } as const;
 export const CHAT_MAX_TOKENS = 12000;
 export const TITLE_MAX_TOKENS = 1000;
 /* Think briefly, then write. The gateway's default on publik-balanced is
@@ -624,4 +635,80 @@ export async function synthesizePodcastAudio(
     parts.push(blob);
   }
   return new Blob(parts, { type: "audio/mpeg" });
+}
+
+/* ---- Explainer video ----------------------------------------------------- */
+
+function oneLine(value: unknown): string {
+  return typeof value === "string" ? value.replace(/[*_`#]+/g, "").replace(/\s+/g, " ").trim() : "";
+}
+
+/* `text` cut to `max` characters at the end of a sentence (else of a word). */
+function cutAt(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const head = text.slice(0, max);
+  const sentence = Math.max(head.lastIndexOf(". "), head.lastIndexOf("? "), head.lastIndexOf("! "));
+  if (sentence > max * 0.5) return head.slice(0, sentence + 1);
+  const word = head.lastIndexOf(" ");
+  return `${head.slice(0, word > 0 ? word : max).replace(/[,;:]$/, "")}…`;
+}
+
+/* The model's slides, held to EXPLAINER_LIMITS. A slide with no title or no
+   narration is dropped. */
+export function tidyExplainerSlides(raw: unknown): ExplainerSlide[] {
+  const out: ExplainerSlide[] = [];
+  for (const item of Array.isArray(raw) ? raw : []) {
+    if (out.length >= EXPLAINER_LIMITS.slides) break;
+    const s = (item ?? {}) as { title?: unknown; bullets?: unknown; narration?: unknown };
+    const title = cutAt(oneLine(s.title), EXPLAINER_LIMITS.titleChars);
+    const narration = cutAt(oneLine(s.narration), EXPLAINER_LIMITS.narrationChars);
+    if (!title || !narration) continue;
+    const bullets = (Array.isArray(s.bullets) ? s.bullets : [])
+      .map((b) => cutAt(oneLine(b), EXPLAINER_LIMITS.bulletChars))
+      .filter(Boolean)
+      .slice(0, EXPLAINER_LIMITS.bullets);
+    out.push({ title, bullets, narration });
+  }
+  return out;
+}
+
+/* The script of a short explainer video, from the note: one call on the
+   FAST tier. */
+export async function generateExplainerScript(engine: Engine, note: Note): Promise<ExplainerSlide[]> {
+  const { slides } = await structuredToFit<{ slides: ExplainerSlide[] }>(
+    engine,
+    {
+      system: explainerSystem(),
+      messages: [{ role: "user", content: studyContent(note) }],
+      schema: explainerSchema as unknown as Record<string, unknown>,
+      schemaName: "explainer",
+      tier: "fast",
+      maxTokens: EXPLAINER_MAX_TOKENS,
+      reasoningEffort: REASONING_EFFORT,
+    },
+    "explainer script",
+  );
+  const tidy = tidyExplainerSlides(slides);
+  if (tidy.length === 0) throw new EngineError("The model returned no slides. Try again.", "unknown");
+  return tidy;
+}
+
+/* How many characters the voice will read (text-to-speech is paid per character). */
+export function explainerVoiceChars(slides: ExplainerSlide[]): number {
+  return slides.reduce((n, s) => n + s.narration.length, 0);
+}
+
+/* One voice clip per slide, with the same text-to-speech call as the
+   podcast (engine.tts: tts-1 on publik API). */
+export async function synthesizeExplainerAudio(
+  engine: Engine,
+  slides: ExplainerSlide[],
+  opts: { voice?: string; signal?: AbortSignal; onSlide?: (done: number, total: number) => void } = {},
+): Promise<Blob[]> {
+  const clips: Blob[] = [];
+  for (const slide of slides) {
+    opts.onSlide?.(clips.length, slides.length);
+    clips.push(await engine.tts(slide.narration, { voice: opts.voice ?? DEFAULT_VOICES.host, format: "mp3", signal: opts.signal }));
+  }
+  return clips;
 }

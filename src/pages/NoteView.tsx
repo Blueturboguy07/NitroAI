@@ -3,6 +3,7 @@ import { NavLink, useNavigate, useParams } from "react-router-dom";
 import {
   ChevronLeft,
   ChevronRight,
+  Clapperboard,
   Download,
   FileText,
   Layers,
@@ -21,6 +22,8 @@ import Assistant from "../components/Assistant";
 import FlashcardsView from "../components/FlashcardsView";
 import QuizView from "../components/QuizView";
 import PodcastPanel from "../components/PodcastPanel";
+import LectureVideo from "../components/LectureVideo";
+import ExplainerPanel from "../components/ExplainerPanel";
 import {
   downloadText,
   exportDocxHtml,
@@ -34,6 +37,7 @@ const railViews = [
   { view: "editor", icon: FileText, label: "Editor" },
   { view: "chat", icon: MessageCircle, label: "Chat" },
   { view: "podcast", icon: Mic, label: "Podcast" },
+  { view: "video", icon: Clapperboard, label: "Explainer video" },
   { view: "flashcards", icon: Layers, label: "Flashcards" },
   { view: "quiz", icon: ListChecks, label: "Quiz" },
 ];
@@ -121,6 +125,8 @@ export default function NoteView() {
           <Assistant note={note} variant="hero" />
         ) : view === "podcast" ? (
           <PodcastPanel note={note} />
+        ) : view === "video" ? (
+          <ExplainerPanel note={note} onNote={setNote} />
         ) : view === "flashcards" ? (
           <FlashcardsView note={note} />
         ) : view === "quiz" ? (
@@ -178,6 +184,8 @@ function EditorView({
             )}
           </div>
         </div>
+        {/* "Trim the solve-time gaps": the shorter video, above its notes. */}
+        <LectureVideo note={note} />
         <div className="mx-6 mb-6 flex-1 overflow-y-auto rounded-card border border-edge bg-card p-8 shadow-soft">
           <BlockEditor key={note.id} blocks={note.blocks} onChange={onBlocks} />
         </div>

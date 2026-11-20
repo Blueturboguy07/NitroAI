@@ -10,6 +10,7 @@ import type { Job, JobFile, Note, SourceKind } from "../types";
 import { uuid, now } from "../ids";
 import { ingest, type IngestInput } from "../ingest";
 import { cutTitle } from "../ingest/text";
+import { discardLecture } from "../ingest/lecture";
 import { generateNoteBody, generateTitle } from "./index";
 
 export type ProgressCb = (job: Job) => void;
@@ -29,9 +30,20 @@ function primaryKind(inputs: IngestInput[]): SourceKind {
   return inputs[0]?.kind ?? "text";
 }
 
-export async function createNoteFromSources(
-  opts: CreateNoteOptions,
-): Promise<string> {
+export async function createNoteFromSources(opts: CreateNoteOptions): Promise<string> {
+  /* Trimmed lecture videos this run made on the local server. When no note
+     is saved (a failure, or the user stopped it), they are deleted: a video
+     with no note has no place in the app. */
+  const lectureIds: string[] = [];
+  try {
+    return await run(opts, lectureIds);
+  } catch (err) {
+    for (const id of lectureIds) void discardLecture(id);
+    throw err;
+  }
+}
+
+async function run(opts: CreateNoteOptions, lectureIds: string[]): Promise<string> {
   const { repo, engine, inputs, language = "English", onProgress } = opts;
 
   const job: Job = {
@@ -76,7 +88,11 @@ export async function createNoteFromSources(
       progress: (i + 0.2) / (inputs.length + 1),
     });
     try {
-      const res = await ingest(inputs[i]);
+      const res = await ingest(inputs[i], {
+        signal: opts.signal,
+        onProgress: (message) => void emit({ message }),
+      });
+      if (typeof res.meta?.lectureId === "string") lectureIds.push(res.meta.lectureId);
       let text = res.text;
       if (res.needsTranscription && res.audio) {
         if (engine.mode === "cloud" && res.audio.size > 24 * 1024 * 1024) {
@@ -107,6 +123,11 @@ export async function createNoteFromSources(
           : "Failed to process.";
     }
     await emit({ progress: (i + 1) / (inputs.length + 1) });
+  }
+
+  if (opts.signal?.aborted) {
+    await emit({ status: "error", message: "Stopped.", error: "Stopped." });
+    throw new DOMException("Stopped.", "AbortError");
   }
 
   if (!anyOk) {

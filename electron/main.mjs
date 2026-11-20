@@ -73,6 +73,8 @@ async function ensureServer() {
   serverInfo = await startServer({
     distDir: path.join(__dirname, "..", "dist"),
     binDir: binDir(),
+    // The trimmed lecture videos ("Trim the solve-time gaps", server/lecture.mjs).
+    mediaDir: path.join(app.getPath("userData"), "lectures"),
     host: "127.0.0.1",
     // A stable port keeps the renderer's origin (and so its localStorage /
     // IndexedDB) the same across launches — see STABLE_PORTS in httpServer.mjs.

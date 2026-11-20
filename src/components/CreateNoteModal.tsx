@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertCircle, FileAudio, FileText, Info, Link2, Upload, X } from "lucide-react";
 import type { IngestInput } from "../lib/ingest";
 import { DOCUMENT_ACCEPT, audioBlobProblem, documentFileProblem, documentKind } from "../lib/ingest/fileTypes";
 import { isYoutube } from "../lib/ingest/youtube";
+import { lectureStatus, NO_LOCAL_SERVER_MESSAGE } from "../lib/ingest/lecture";
 import type { Engine } from "../lib/engine/types";
 import { supportsTask } from "../lib/engine/router";
 
@@ -37,8 +38,27 @@ export default function CreateNoteModal({
      sent to a model; a drop skips the file dialog's type filter, so every
      added document is checked here. */
   const [refused, setRefused] = useState<string[]>([]);
+  /* "Trim the solve-time gaps" (YouTube links only, off by default). */
+  const [trim, setTrim] = useState(false);
+  /* Why the trim cannot run here (no ffmpeg, no local server); null: it can. */
+  const [trimProblem, setTrimProblem] = useState<string | null>(null);
   const { icon: Icon, iconBg } = meta[source];
-  const ready = source === "link" ? url.trim().length > 0 : files.length > 0;
+  const youtube = source === "link" && isYoutube(url.trim());
+  const trimOn = trim && youtube;
+  const ready = (source === "link" ? url.trim().length > 0 : files.length > 0) && !(trimOn && trimProblem);
+
+  // The trim needs ffmpeg on this computer: say so before the long job starts.
+  useEffect(() => {
+    if (!trimOn) return;
+    let alive = true;
+    void lectureStatus().then((s) => {
+      if (!alive) return;
+      setTrimProblem(s === null ? NO_LOCAL_SERVER_MESSAGE : s.ffmpeg ? null : s.message || "Trimming a video needs ffmpeg on this computer.");
+    });
+    return () => {
+      alive = false;
+    };
+  }, [trimOn]);
   const canTranscribe = !engine || supportsTask(engine, "transcription");
 
   async function addFiles(added: File[]) {
@@ -53,7 +73,8 @@ export default function CreateNoteModal({
     if (!ready || busy) return;
     if (source === "link") {
       const u = url.trim();
-      onGenerate([{ kind: isYoutube(u) ? "youtube" : "url", url: u }]);
+      if (trimOn) onGenerate([{ kind: "youtube", url: u, trimGaps: true }]);
+      else onGenerate([{ kind: isYoutube(u) ? "youtube" : "url", url: u }]);
     } else if (source === "document") {
       onGenerate(
         files.flatMap((f) => {
@@ -101,6 +122,32 @@ export default function CreateNoteModal({
             placeholder="Paste a website or YouTube link..."
             className="w-full rounded-xl border border-edge bg-panel px-4 py-3.5 text-sm outline-none placeholder:text-ink-faint focus:border-accent"
           />
+        )}
+
+        {source === "link" && (
+          <>
+            <label
+              className={`mt-3 flex items-start gap-3 rounded-xl border border-edge bg-panel px-3.5 py-3 text-sm ${
+                youtube ? "cursor-pointer" : "opacity-60"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={trimOn}
+                disabled={!youtube || busy}
+                onChange={(e) => setTrim(e.target.checked)}
+                className="mt-0.5 size-4 shrink-0 accent-accent"
+              />
+              <span>
+                <span className="block font-semibold text-ink">Trim the solve-time gaps</span>
+                <span className="block text-xs text-ink-faint">
+                  For YouTube lectures. NitroAI downloads the video and cuts the long stretches where the class
+                  works alone. You get the shorter video and the notes. This takes a few minutes.
+                </span>
+              </span>
+            </label>
+            {trimOn && trimProblem && <Refused messages={[trimProblem]} />}
+          </>
         )}
 
         {source === "document" && (
