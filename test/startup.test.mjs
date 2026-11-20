@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
-const app = { requestSingleInstanceLock: vi.fn(), quit: vi.fn(), on: vi.fn() };
+const app = { requestSingleInstanceLock: vi.fn(), releaseSingleInstanceLock: vi.fn(), quit: vi.fn(), on: vi.fn() };
 vi.mock("electron", () => ({ app, BrowserWindow: class {} }));
 
 const { focusFirst, isTestRun, takeSingleInstance } = await import("../electron/startup.mjs");
@@ -38,6 +38,10 @@ describe("one copy of the app", () => {
     expect(main.focus).toHaveBeenCalled();
     expect(other.focus).not.toHaveBeenCalled();
     expect(gone.focus).not.toHaveBeenCalled();
+    // The lock is freed before the app quits, so an update's relaunch is not a "second copy".
+    const quit = app.on.mock.calls.find(([name]) => name === "before-quit");
+    quit[1]();
+    expect(app.releaseSingleInstanceLock).toHaveBeenCalledTimes(1);
   });
 
   it("a test run (update proof, self-test) takes no lock", () => {

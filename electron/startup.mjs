@@ -43,6 +43,11 @@ export function takeSingleInstance(getWindows) {
   app.on("second-instance", () => {
     focusFirst(getWindows());
   });
+  // An update quits this copy and starts the new version: free the lock
+  // first, so the new copy is never taken for a second one.
+  app.on("before-quit", () => {
+    app.releaseSingleInstanceLock();
+  });
   return true;
 }
 
