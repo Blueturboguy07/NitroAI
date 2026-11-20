@@ -26,6 +26,7 @@ import {
 // the local server; the renderer talks through /api/publik/.
 import { ensureSignedIn, hasAppToken } from "../server/publik.mjs";
 import { electronGateUI } from "./publik-gate.mjs";
+import { isTestRun, openSplash, takeSingleInstance } from "./startup.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Signed self-updates (publik-updater.cjs, docs/updates.md). The updater files
@@ -40,6 +41,11 @@ let healthTimer = null;
 // window is the publik gate: closing it quits the app (publik-gate.mjs), and
 // its planned close after the sign-in must not count as "all windows closed".
 let appWindowCreated = false;
+// The "Starting NitroAI…" window (startup.mjs), from launch until the gate or
+// the app's own window is on screen.
+let splash = null;
+// One copy only: a second start brings this copy's window forward and quits.
+const firstCopy = takeSingleInstance(() => [mainWindow, ...BrowserWindow.getAllWindows(), splash?.window()]);
 
 function binDir() {
   return path.join(app.getPath("userData"), "bin");
@@ -122,6 +128,7 @@ async function createWindow() {
   });
 
   await mainWindow.loadURL(info.url);
+  splash?.close();
   startHealthWatch();
 
   // If this machine was set up for local AI in a past session, restart Ollama
@@ -130,6 +137,7 @@ async function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (!firstCopy) return;
   // Updates: checks publik's signed update feed at launch and every 24 h, and
   // adds "Check for Updates…" to the menu (macOS: the NitroAI menu; Windows:
   // Help). A test build started with PUBLIK_UPDATER_TEST runs the CI update
@@ -140,10 +148,21 @@ app.whenReady().then(async () => {
   // until this computer is signed in, asks once how the app pays for AI, and
   // starts the usage counts (app_opened now, active_session every 30 minutes).
   // PUBLIK_SELF_TEST=1 makes it print the self-test line and exit instead.
-  const ui = electronGateUI({ appName: "NitroAI" });
+  // Something on screen at once: the sign-in check and the local server can
+  // take a while on a first start, and a click with no answer gets clicked again.
+  if (!isTestRun()) splash = openSplash();
+  const gate = electronGateUI({ appName: "NitroAI" });
+  // The gate draws a screen only when this computer must sign in or choose;
+  // its window then takes the splash's place.
+  const ui = { ...gate, show: (screen, signal) => { splash?.close(); return gate.show(screen, signal); } };
   await ensureSignedIn(ui);
-  ui.close();
-  return createWindow();
+  if (!isTestRun() && !splash?.window()) splash = openSplash();
+  gate.close();
+  try {
+    return await createWindow();
+  } finally {
+    splash?.close();
+  }
 });
 
 app.on("activate", () => {
