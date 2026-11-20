@@ -96,7 +96,11 @@ export async function fetchLectureVideo(id: string, signal?: AbortSignal): Promi
   if (!res.ok || !(res.headers.get("content-type") ?? "").startsWith("video/")) {
     throw new Error("The trimmed video is not on this computer any more.");
   }
-  return res.blob();
+  // Not res.blob(): for a large file Chromium writes that blob to disk as
+  // it streams, and the step fails ("Failed to fetch") on a computer that is
+  // low on disk space. Seen with a 67 MB lecture. Read the bytes, then wrap.
+  const bytes = await res.arrayBuffer();
+  return new Blob([bytes], { type: "video/mp4" });
 }
 
 /* Delete a trimmed video (its note was deleted, or was never made). Quiet. */

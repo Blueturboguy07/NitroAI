@@ -2,7 +2,7 @@
    event stream from /api/lecture/trim, and the notes pipeline around it.
    fetch is a stand-in here: nothing is downloaded. */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { formatClock, ingestLectureTrim, lectureOf, lectureStatus, trimProgressText, trimSummaryText, NO_LOCAL_SERVER_MESSAGE } from "./lecture";
+import { fetchLectureVideo, formatClock, ingestLectureTrim, lectureOf, lectureStatus, trimProgressText, trimSummaryText, NO_LOCAL_SERVER_MESSAGE } from "./lecture";
 import { ingest } from "./index";
 import { createNoteFromSources } from "../generation/pipeline";
 import { Repo } from "../db";
@@ -197,5 +197,24 @@ describe("the notes pipeline with a trimmed lecture", () => {
     const run = createNoteFromSources({ repo, engine: fakeEngine(), inputs: [{ kind: "youtube", url: URL_, trimGaps: true }], signal: stop.signal });
     await expect(run).rejects.toMatchObject({ name: "AbortError" });
     expect(await repo.listNotes()).toEqual([]);
+  });
+});
+
+describe("fetchLectureVideo", () => {
+  it("reads the bytes itself and never calls blob() on the answer", async () => {
+    // blob() on a large answer fails in Chromium on a computer that is low
+    // on disk space. The bytes come from arrayBuffer().
+    const bytes = new Uint8Array([1, 2, 3, 4, 5]);
+    const res = new Response(bytes, { headers: { "content-type": "video/mp4" } });
+    res.blob = () => Promise.reject(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", vi.fn(async () => res));
+    const blob = await fetchLectureVideo(ID);
+    expect(blob.type).toBe("video/mp4");
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(bytes);
+  });
+
+  it("says so when the file is gone", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "x" }), { status: 404, headers: { "content-type": "application/json" } })));
+    await expect(fetchLectureVideo(ID)).rejects.toThrow("not on this computer any more");
   });
 });
