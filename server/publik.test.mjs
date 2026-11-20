@@ -196,27 +196,30 @@ describe("the module", () => {
     expect(connect.buttons.map((b) => b.label)).toEqual(["Connect your plan", "Use my own key"]);
   });
 
-  it("ensureSignedIn(): sign in → choose once → the choice is kept and the usage count starts", async () => {
+  const noScreen = () => ({ show: () => { throw new Error("no screen expected"); }, openUrl() {}, close() {} });
+
+  it("ensureSignedIn(): sign in → straight in (no pay screen), the choice is publik and the usage count starts", async () => {
     const shown = [];
     const opened = [];
     const ui = {
       show(screen) {
         shown.push(screen.title);
         if (screen.id === "sign_in") {
-          // The person signs in in the browser: the next GET /wallet says claimed.
+          // The person signs in in the browser: the next GET /wallet says claimed (no plan, no balance).
           publik.wallet = walletBody({ claim_state: "claimed", account: { handle: "mann" } });
           return Promise.resolve("sign_in");
         }
-        return Promise.resolve("own_key");
+        return Promise.reject(new Error(`no screen after sign-in expected, got ${screen.title}`));
       },
       openUrl(url) { opened.push(url); },
       close() {},
     };
     const gate = await mod.ensureSignedIn(ui);
-    expect(shown).toEqual(["Sign in with publik", "Choose how to pay for AI"]);
+    expect(shown).toEqual(["Sign in with publik"]);
     expect(opened).toEqual([CLAIM_URL]);
-    expect(gate).toMatchObject({ key: KEY, choice: "own_key", wallet: { claim_state: "claimed" } });
-    expect(mod.readCredential()).toMatchObject({ key: KEY, choice: "own_key" });
+    expect(gate).toMatchObject({ key: KEY, choice: "publik", wallet: { claim_state: "claimed" } });
+    expect(mod.readCredential()).toMatchObject({ key: KEY, choice: "publik" });
+    expect(mod.resolveProvider(null)).toEqual({ kind: "publik", baseURL: `${publik.url}/api/v1`, apiKey: KEY });
 
     // app_opened reaches POST /api/v1/telemetry with this computer's key, without content.
     for (let i = 0; i < 40 && !publik.requests.some((r) => r.url === "/api/v1/telemetry"); i++) await new Promise((r) => setTimeout(r, 50));
@@ -227,17 +230,34 @@ describe("the module", () => {
     expect(t.body.install_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(Object.keys(t.body).sort()).toEqual(["app", "app_version", "arch", "event", "install_id", "os", "v"].filter((k) => k !== "arch" || t.body.arch));
 
-    // The answer is kept: the next start shows no screen.
-    const again = await mod.ensureSignedIn({ show: () => { throw new Error("no screen expected"); }, openUrl() {}, close() {} });
-    expect(again.choice).toBe("own_key");
+    // The choice is kept: the next start shows no screen.
+    const again = await mod.ensureSignedIn(noScreen());
+    expect(again.choice).toBe("publik");
+  });
+
+  it("ensureSignedIn(): a signed-in person with no plan and no balance sees no screen", async () => {
+    await mod.provision(); // signed in on an earlier start, no choice stored
+    publik.wallet = walletBody({ claim_state: "claimed", plan: { kind: "none", label: null }, balance_micros: 0 });
+    const gate = await mod.ensureSignedIn(noScreen());
+    expect(gate.choice).toBe("publik");
+    expect(mod.readCredential()).toMatchObject({ key: KEY, choice: "publik" });
+  });
+
+  it("ensureSignedIn(): a stored own_key choice is kept", async () => {
+    await mod.provision();
+    mod.setChoice("own_key"); // "Use my own key" in Settings
+    publik.wallet = walletBody({ claim_state: "claimed", plan: { kind: "plan", label: "Pro" } });
+    const gate = await mod.ensureSignedIn(noScreen());
+    expect(gate.choice).toBe("own_key");
+    expect(mod.readCredential()).toMatchObject({ key: KEY, choice: "own_key" });
+    expect(mod.resolveProvider({ apiKey: "sk-user" })).toMatchObject({ kind: "own", apiKey: "sk-user" });
   });
 
   it("ensureSignedIn(): a revoked key is provisioned again before the gate", async () => {
     await mod.provision();
     publik.key = KEY2; // publik forgot KEY: GET /wallet with it answers 401
     publik.wallet = walletBody({ claim_state: "claimed", plan: { kind: "plan", label: "Pro" } });
-    const ui = { show: (screen) => Promise.resolve(screen.title === "Connect your plan" ? "connect" : "retry"), openUrl() {}, close() {} };
-    const gate = await mod.ensureSignedIn(ui);
+    const gate = await mod.ensureSignedIn(noScreen());
     expect(gate.key).toBe(KEY2);
     expect(gate.choice).toBe("publik");
     expect(installs()).toHaveLength(2);

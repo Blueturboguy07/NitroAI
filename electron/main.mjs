@@ -147,14 +147,14 @@ app.whenReady().then(async () => {
   if (startUpdates({ slug: "nitroai", appName: "NitroAI" }).testHook) return;
 
   // Every publik app opens with Sign in with publik. The gate window shows
-  // until this computer is signed in, asks once how the app pays for AI, and
-  // starts the usage counts (app_opened now, active_session every 30 minutes).
+  // until this computer is signed in (no pay screen: the choice is "publik"
+  // until the person changes it in Settings), and starts the usage counts (app_opened now, active_session every 30 minutes).
   // PUBLIK_SELF_TEST=1 makes it print the self-test line and exit instead.
   // Something on screen at once: the sign-in check and the local server can
   // take a while on a first start, and a click with no answer gets clicked again.
   if (!isTestRun()) splash = openSplash();
   const gate = electronGateUI({ appName: "NitroAI" });
-  // The gate draws a screen only when this computer must sign in or choose;
+  // The gate draws a screen only when this computer must sign in;
   // its window then takes the splash's place.
   const ui = { ...gate, show: (screen, signal) => { splash?.close(); return gate.show(screen, signal); } };
   await ensureSignedIn(ui);
