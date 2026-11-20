@@ -205,4 +205,7 @@ export interface EnginePrefs {
   language: string;
   /* The publik API disclosure_version the user accepted; 0 = never shown. */
   publikDisclosureAck?: number;
+  /* "Keep my library in my publik account" (lib/libraryBackup.ts). Off until
+     the person turns it on; used only while mode is "publik". */
+  libraryBackup?: boolean;
 }

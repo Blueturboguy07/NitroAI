@@ -24,6 +24,8 @@ import { fetchPublikStatus } from "../lib/publik";
 import { DISCLOSURE_VERSION, otherWays, settings as publikCopy } from "../lib/publikCopy";
 import LocalSetupModal from "../components/LocalSetupModal";
 import PublikSettings from "../components/PublikSettings";
+import BackupSettings from "../components/BackupSettings";
+import { backupCopy } from "../lib/libraryBackup";
 import { exportMarkdown, downloadText } from "../lib/export";
 import type { EngineMode } from "../lib/types";
 
@@ -70,6 +72,10 @@ export default function Settings() {
   const [othersOpen, setOthersOpen] = useState(false);
   const provider = detectProvider(key.trim());
   const activeModel = prefs.localModel || DEFAULT_CHAT_MODEL;
+  /* The library backup needs publik API as the engine in use: it is paid
+     from the publik balance and kept in the publik account. */
+  const backupOffered = publikOffered && prefs.mode === "publik";
+  const backupOn = backupOffered && prefs.libraryBackup === true;
 
   useEffect(() => {
     loadApiKey().then(setKey);
@@ -278,7 +284,7 @@ export default function Settings() {
               <Pencil className="size-3.5 text-ink-faint" />
             </div>
             <span className="text-sm text-ink-faint">
-              Local account — nothing leaves this device
+              {backupOn ? backupCopy.backedUp : backupCopy.localOnly}
             </span>
 
             <div className="mt-5 w-full space-y-3">
@@ -393,6 +399,8 @@ export default function Settings() {
             )}
           </div>
 
+          {backupOffered && <BackupSettings />}
+
           <div className="rounded-card border border-edge bg-card p-6 shadow-soft">
             <h2 className="flex items-center gap-2 font-display text-xl font-bold">
               <Download className="size-5 text-accent" />
@@ -402,6 +410,9 @@ export default function Settings() {
               NitroAI is free and open source (AGPL-3.0). Your notes are yours —
               export any single note as Markdown, PDF, or Word from its menu, or
               export everything at once here. Nothing is ever locked behind a paywall.
+            </p>
+            <p className="mt-2 text-sm font-semibold text-ink-dim" data-testid="where-notes-live">
+              {backupOn ? backupCopy.backedUp : `${backupCopy.localOnly} ${backupCopy.localOnlyHint}`}
             </p>
             <div className="mt-4 flex items-center gap-3">
               <button

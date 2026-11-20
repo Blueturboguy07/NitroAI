@@ -7,7 +7,8 @@
  *   POST /api/local/setup          → SSE stream that installs/starts/pulls Ollama
  *   *    /api/lecture/*            → "Trim the solve-time gaps": download, cut, play (see lecture.mjs)
  *   POST /api/explainer/render     → slides + voice → one .mp4 (see explainer.mjs)
- *   *    /api/publik/*              → publik API credential + streaming proxy (see publikProxy.mjs)
+ *   *    /api/publik/*              → publik API credential + streaming proxy (see publikProxy.mjs),
+ *                                    and the library backup under /api/publik/backup (see publikBackup.mjs)
  *
  * Every /api/* request passes ONE guard first (localGuard.mjs): Host, the
  * app-only header, Sec-Fetch-Site, Origin and Content-Type. A GET never

@@ -18,11 +18,15 @@
  *   POST /api/publik/disconnect             → same as forget
  *   GET  /api/publik/wallet                 → GET <base_url>/wallet (balance line fallback)
  *   POST /api/publik/chat                   → alias of /api/publik/v1/chat/completions
+ *   GET  /api/publik/backup                 → is there a library backup in the person's account
+ *   POST /api/publik/backup                 → save the library snapshot (the body) as the backup
+ *   GET  /api/publik/backup/data            → the snapshot JSON of the newest backup
  *   *    /api/publik/v1/<allowlisted path>  → streaming passthrough to <base_url>/<path>
  *
  * Pure Node built-ins. */
 
 import { Readable } from "node:stream";
+import { BackupError, MAX_BACKUP_BODY, createBackup } from "./publikBackup.mjs";
 import { DEFAULT_BASE_URL, MODELS, hasAppToken, provision, readCredential, readWallet, resolveProvider, setChoice } from "./publik.mjs";
 
 /* The version of the cost + data-path disclosure text the renderer shows
@@ -131,8 +135,71 @@ export function status() {
 export function createPublikHandler(opts = {}) {
   // Older callers pass { token, appVersion, credentialFile, baseUrl, fetchImpl };
   // the module reads the token, the version and the credential itself.
-  void opts;
   const baseUrl = DEFAULT_BASE_URL.replace(/\/$/, "");
+  /* The library backup (publikBackup.mjs). `opts.backup` = { fetchImpl,
+     sleep, readyTries, readyDelayMs } for tests. */
+  const backup = createBackup(opts.backup ?? {});
+
+  /* The backup routes use the machine credential only (the install key, and
+     only when the person's choice is "publik"): a backup belongs to the
+     signed-in person of this computer, never to a key pasted in a field. */
+  async function handleBackup(req, res, p) {
+    const sendError = (err) => {
+      if (err instanceof BackupError) return sendJson(res, err.status, err.toJSON());
+      return sendJson(res, 500, { error: { type: "backup_failed", message: "The backup did not work. Try again." } });
+    };
+    const cred = resolveCredential();
+    if (p === "/api/publik/backup" && req.method === "GET") {
+      if (!cred) return sendJson(res, 200, { available: false, exists: false, id: null, bytes: null, created_at: null });
+      try {
+        return sendJson(res, 200, await backup.info({ key: cred.key, base_url: cred.base_url.replace(/\/$/, "") }));
+      } catch (err) {
+        return sendError(err);
+      }
+    }
+    if (!cred) {
+      return sendJson(res, 401, { error: { type: "no_publik_credential", message: "publik API is not set up on this computer." } });
+    }
+    const c = { key: cred.key, base_url: cred.base_url.replace(/\/$/, "") };
+    if (p === "/api/publik/backup" && req.method === "POST") {
+      let body;
+      try {
+        body = await readBody(req, MAX_BACKUP_BODY);
+      } catch (err) {
+        if (err?.code === "too_large") {
+          return sendJson(res, 413, { error: { type: "backup_too_large", message: "Your library is over 64 MB. That is too large to back up." } });
+        }
+        return sendJson(res, 400, { error: { type: "bad_request", message: "could not read request body" } });
+      }
+      // Only a NitroAI snapshot is stored: never an arbitrary upload.
+      let ok = false;
+      try {
+        const snap = JSON.parse(body.toString("utf8"));
+        ok = snap && typeof snap === "object" && snap.format === "nitroai-library" && snap.collections && typeof snap.collections === "object";
+      } catch {
+        ok = false;
+      }
+      if (!ok) return sendJson(res, 400, { error: { type: "bad_snapshot", message: "This is not a NitroAI library snapshot." } });
+      try {
+        return sendJson(res, 200, await backup.save(c, body));
+      } catch (err) {
+        return sendError(err);
+      }
+    }
+    if (p === "/api/publik/backup/data" && req.method === "GET") {
+      try {
+        const got = await backup.open(c);
+        res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        const stream = Readable.fromWeb(got.response.body);
+        stream.on("error", () => res.destroy());
+        stream.pipe(res);
+        return;
+      } catch (err) {
+        return sendError(err);
+      }
+    }
+    return sendJson(res, 404, { error: { type: "unknown_endpoint", message: "unknown endpoint" } });
+  }
 
   /* A pk_ key pasted into the BYO field rides along as Authorization; it wins
      over the machine credential for that request so "my own publik key" is
@@ -325,6 +392,11 @@ export function createPublikHandler(opts = {}) {
       } catch (err) {
         sendJson(res, 502, { error: { type: "gateway_unreachable", message: err instanceof Error ? err.message : "wallet failed" } });
       }
+      return true;
+    }
+
+    if (p === "/api/publik/backup" || p === "/api/publik/backup/data") {
+      await handleBackup(req, res, p);
       return true;
     }
 

@@ -22,6 +22,11 @@ import { getEnginePrefs, saveEnginePrefs } from "./prefs";
 import { fetchPublikStatus, linesToCapabilities, statusToBalance, usageToBalance } from "./publik";
 import type { EnginePrefs } from "./types";
 import { reconcileJobs } from "./generation/pipeline";
+import { maybeAutoBackup } from "./libraryBackup";
+
+/* How often the app asks "is an automatic backup due?". The answer is yes at
+   most once every 24 hours (lib/libraryBackup.ts). */
+const AUTO_BACKUP_CHECK_MS = 30 * 60 * 1000;
 
 let repoPromise: Promise<Repo> | null = null;
 export function getRepo(): Promise<Repo> {
@@ -141,6 +146,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       alive = false;
     };
   }, []);
+
+  /* "Keep my library in my publik account": at app start, when the setting
+     is turned on, and then on a timer. Off, or another engine: nothing runs. */
+  const backupOn = prefs.mode === "publik" && prefs.libraryBackup === true;
+  useEffect(() => {
+    if (!repo || !backupOn) return;
+    const run = () => void maybeAutoBackup(repo.store, { enabled: true }).catch(() => {});
+    run();
+    const timer = setInterval(run, AUTO_BACKUP_CHECK_MS);
+    return () => clearInterval(timer);
+  }, [repo, backupOn]);
 
   const value = useMemo<AppCtx>(
     () => ({ repo, engine, prefs, ready, version, bump, reloadEngine, savePrefs }),
