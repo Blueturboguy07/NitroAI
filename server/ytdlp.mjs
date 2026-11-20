@@ -252,9 +252,10 @@ export async function extractYoutube(url, binDir, opts = {}) {
 /* ---- "Trim the solve-time gaps" (server/lecture.mjs) --------------------- */
 
 /* The video file for a lecture: at most 720p (enough to read a board, and
-   quick to cut), mp4 when YouTube has it. */
+   quick to cut). H.264 in mp4 first: every player opens it (YouTube's other
+   mp4 is AV1, which QuickTime does not play). */
 export const LECTURE_FORMAT =
-  "bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/bv*[height<=720]+ba/b[height<=720]/b";
+  "bv*[height<=720][vcodec^=avc1]+ba[ext=m4a]/bv*[height<=720][ext=mp4]+ba[ext=m4a]/b[height<=720][ext=mp4]/bv*[height<=720]+ba/b[height<=720]/b";
 export const LECTURE_MAX_SECONDS = 4 * 60 * 60;
 const DOWNLOAD_TIMEOUT_MS = 45 * 60 * 1000;
 const VIDEO_EXTS = new Set(["mp4", "mkv", "webm", "mov", "m4v"]);

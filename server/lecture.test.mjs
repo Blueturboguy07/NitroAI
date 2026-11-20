@@ -41,7 +41,9 @@ function dirs() {
 }
 
 async function start(lecture) {
-  app = await startServer({ ...dirs(), port: 0, lecture });
+  // The job's temp folder is made inside this test's own folder.
+  fs.mkdirSync(path.join(root, "tmp"), { recursive: true });
+  app = await startServer({ ...dirs(), port: 0, lecture: { ...lecture, tmpRoot: path.join(root, "tmp") } });
   return app.url;
 }
 
@@ -328,7 +330,7 @@ async function seconds(file) {
 }
 
 function leftoverTemp() {
-  return fs.readdirSync(os.tmpdir()).filter((n) => /^nitroai-lecture-(?!test-)/.test(n));
+  return fs.readdirSync(path.join(root, "tmp"));
 }
 
 const CAPTIONS = [
@@ -340,7 +342,6 @@ const CAPTIONS = [
 describe.skipIf(!ffmpeg || process.platform === "win32")("the whole job with ffmpeg (a 14-second video: tone, 8 s of silence, tone)", () => {
   let fixtures;
   let video;
-  let tempBefore;
 
   beforeAll(() => {
     fixtures = fs.mkdtempSync(path.join(os.tmpdir(), "nitroai-lecture-test-fx-"));
@@ -352,7 +353,6 @@ describe.skipIf(!ffmpeg || process.platform === "win32")("the whole job with ffm
       "-af", "volume='if(between(t,3,11),0,1)':eval=frame",
       "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", video,
     ]);
-    tempBefore = leftoverTemp();
   }, 60_000);
   afterAll(() => fs.rmSync(fixtures, { recursive: true, force: true }));
 
@@ -389,7 +389,7 @@ describe.skipIf(!ffmpeg || process.platform === "win32")("the whole job with ffm
       expect(line.endsWith(`-- ${LINK}`), line).toBe(true);
     }
     expect(runs[2]).toContain(`--ffmpeg-location ${ffmpeg}`);
-    expect(leftoverTemp()).toEqual(tempBefore);
+    expect(leftoverTemp()).toEqual([]);
 
     await post(base, "/api/lecture/delete", { id: done.id });
     expect(fs.readdirSync(mediaDir)).toEqual([]);
@@ -433,9 +433,9 @@ describe.skipIf(!ffmpeg || process.platform === "win32")("the whole job with ffm
       if (done) break;
       seen += new TextDecoder().decode(value);
     }
-    expect(leftoverTemp().length).toBe(tempBefore.length + 1);
+    expect(leftoverTemp()).toHaveLength(1);
     stop.abort();
-    await vi.waitFor(() => expect(leftoverTemp()).toEqual(tempBefore), { timeout: 5000 });
+    await vi.waitFor(() => expect(leftoverTemp()).toEqual([]), { timeout: 5000 });
     const { mediaDir } = dirs();
     expect(fs.existsSync(mediaDir) ? fs.readdirSync(mediaDir) : []).toEqual([]);
     // The server is free again: a new trim is accepted (not 409).
@@ -453,7 +453,7 @@ describe.skipIf(!ffmpeg || process.platform === "win32")("the whole job with ffm
     const ev = await events(await post(base, "/api/lecture/trim", { url: LINK }));
     expect(ev[ev.length - 1]).toMatchObject({ phase: "error" });
     expect(ev[ev.length - 1].message).toMatch(/Video unavailable/);
-    expect(leftoverTemp()).toEqual(tempBefore);
+    expect(leftoverTemp()).toEqual([]);
   }, 30_000);
 });
 

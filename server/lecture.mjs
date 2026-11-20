@@ -52,8 +52,8 @@ export const NEEDS_FFMPEG_MESSAGE =
 /* silencedetect: quieter than -35 dB for at least 1 second is silence. */
 const SILENCE_NOISE = "-35dB";
 const SILENCE_MIN_SECONDS = 1;
-const TEMP_PREFIX = "nitroai-lecture-";
-const ID_RE = /^[a-f0-9]{32}$/;
+export const TEMP_PREFIX = "nitroai-lecture-";
+export const ID_RE = /^[a-f0-9]{32}$/;
 const STDERR_LIMIT = 8 * 1024 * 1024;
 
 /* ---- ffmpeg on this computer -------------------------------------------- */
@@ -98,10 +98,11 @@ export async function findFfmpeg({ env = process.env, platform = process.platfor
 
 /* One ffmpeg run. Never rejects for an exit code: returns { code, stderr }.
    Rejects when the run is stopped (signal) or cannot start.
-   `onSeconds` gets the position ffmpeg has reached (needs -progress pipe:1). */
-export function runFfmpeg(bin, args, { signal, onSeconds } = {}) {
+   `onSeconds` gets the position ffmpeg has reached (needs -progress pipe:1).
+   `timeoutMs` ends a run that takes longer (it then has a non-zero code). */
+export function runFfmpeg(bin, args, { signal, onSeconds, timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], signal, windowsHide: true });
+    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], signal, timeout: timeoutMs, killSignal: "SIGKILL", windowsHide: true });
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (text) => {
       if (!onSeconds) return;
@@ -112,12 +113,12 @@ export function runFfmpeg(bin, args, { signal, onSeconds } = {}) {
       if (stderr.length < STDERR_LIMIT) stderr += text;
     });
     child.on("error", reject);
-    child.on("close", (code) => resolve({ code, stderr }));
+    child.on("close", (code) => resolve({ code: code ?? 1, stderr }));
   });
 }
 
 const encoders = new Map();
-async function videoEncoder(ffmpeg) {
+export async function videoEncoder(ffmpeg) {
   if (!encoders.has(ffmpeg)) {
     let text = "";
     try {
@@ -132,7 +133,7 @@ async function videoEncoder(ffmpeg) {
 
 /* ---- files --------------------------------------------------------------- */
 
-function moveFile(from, to) {
+export function moveFile(from, to) {
   try {
     fs.renameSync(from, to);
   } catch {
@@ -142,7 +143,7 @@ function moveFile(from, to) {
   }
 }
 
-function lectureFiles(mediaDir, id) {
+export function lectureFiles(mediaDir, id) {
   return { video: path.join(mediaDir, `${id}.mp4`), audio: path.join(mediaDir, `${id}.m4a`) };
 }
 
@@ -178,8 +179,8 @@ function sweepTemp() {
    `emit({ phase, progress })`: phase is "download" | "analyze" | "render" |
    "save"; progress is 0..1. Throws when stopped (signal) or on a failure;
    the temp folder is deleted either way and nothing stays in mediaDir. */
-export async function trimLecture({ url, minGapSeconds, padSeconds, binDir, mediaDir, ffmpeg, ytdlp = {}, signal, emit = () => {} }) {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), TEMP_PREFIX));
+export async function trimLecture({ url, minGapSeconds, padSeconds, binDir, mediaDir, ffmpeg, ytdlp = {}, signal, emit = () => {}, tmpRoot = os.tmpdir() }) {
+  const tmp = fs.mkdtempSync(path.join(tmpRoot, TEMP_PREFIX));
   const id = randomBytes(16).toString("hex");
   const files = lectureFiles(mediaDir, id);
   let saved = false;
@@ -195,7 +196,7 @@ export async function trimLecture({ url, minGapSeconds, padSeconds, binDir, medi
 
     emit({ phase: "analyze", progress: 0 });
     // `ffmpeg -i file` with no output prints the file's length and streams.
-    const probe = await runFfmpeg(ffmpeg, ["-hide_banner", "-nostdin", "-i", dl.videoPath], { signal });
+    const probe = await runFfmpeg(ffmpeg, ["-hide_banner", "-nostdin", "-i", dl.videoPath], { signal, timeoutMs: 60_000 });
     const info = parseMediaInfo(probe.stderr);
     if (!info.durationSeconds || (!info.hasVideo && !info.hasAudio)) throw new Error("NitroAI could not read the downloaded video.");
     let silences = [];
@@ -336,8 +337,9 @@ function sendFile(req, res, file, type) {
  *   mediaDir where the trimmed videos are kept;
  *   ffmpeg   (tests) a path, or null for "no ffmpeg"; default: findFfmpeg();
  *   ytdlp    (tests) { pin, fetchImpl } for ytdlp.mjs;
- *   trim     (tests) a stand-in for trimLecture. */
-export function createLectureHandler({ binDir, mediaDir, ffmpeg, ytdlp, trim = trimLecture } = {}) {
+ *   trim     (tests) a stand-in for trimLecture;
+ *   tmpRoot  (tests) where the job makes its temp folder. */
+export function createLectureHandler({ binDir, mediaDir, ffmpeg, ytdlp, trim = trimLecture, tmpRoot } = {}) {
   let busy = false;
   if (mediaDir) sweepTemp();
   const ffmpegPath = () => (ffmpeg === undefined ? findFfmpeg() : Promise.resolve(ffmpeg));
@@ -418,6 +420,7 @@ export function createLectureHandler({ binDir, mediaDir, ffmpeg, ytdlp, trim = t
           ytdlp,
           signal: stop.signal,
           emit,
+          tmpRoot,
         });
         // The page went away while the last step ran: keep nothing.
         if (!open) removeLecture(mediaDir, result.id);
