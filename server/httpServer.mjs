@@ -83,30 +83,65 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function isFile(file) {
+  try {
+    return fs.statSync(file).isFile();
+  } catch {
+    return false; // not there, not readable, or not a path (a NUL byte)
+  }
+}
+
+/* An error after the request started: a JSON 500, or a cut connection when
+   the answer has already begun. Never throws. */
+function failRequest(res, err) {
+  try {
+    if (res.headersSent) res.destroy();
+    else sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" });
+  } catch {
+    res.destroy();
+  }
+}
+
 /* Serve a static file from dist/, defending against path traversal, with SPA
-   fallback to index.html for client routes. */
+   fallback to index.html for client routes. Never throws: a path that cannot
+   be decoded is a 400, a file that cannot be read is a 404. */
 function serveStatic(distDir, urlPath, res) {
-  const clean = decodeURIComponent(urlPath.split("?")[0]);
+  let clean;
+  try {
+    clean = decodeURIComponent(urlPath.split("?")[0]);
+  } catch {
+    res.writeHead(400).end("Bad request");
+    return;
+  }
   const resolved = path.normalize(path.join(distDir, clean));
   if (!resolved.startsWith(distDir)) {
     res.writeHead(403).end("Forbidden");
     return;
   }
   let filePath = resolved;
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-    // SPA routes (e.g. /notes/:id/editor) have no file — serve the app shell.
-    filePath = path.join(distDir, "index.html");
-  }
-  if (!fs.existsSync(filePath)) {
+  // SPA routes (e.g. /notes/:id/editor) have no file — serve the app shell.
+  if (!isFile(filePath)) filePath = path.join(distDir, "index.html");
+  if (!isFile(filePath)) {
     res.writeHead(404).end("Not found");
     return;
   }
   const ext = path.extname(filePath).toLowerCase();
-  res.writeHead(200, {
-    "content-type": MIME[ext] ?? "application/octet-stream",
-    "cache-control": ext === ".html" ? "no-store" : "public, max-age=31536000, immutable",
+  // The headers go out only when the file is open. A stream error with no
+  // listener is an uncaught exception, and this server runs in the app's
+  // main process.
+  const stream = fs.createReadStream(filePath);
+  stream.on("error", () => {
+    if (res.headersSent) res.destroy();
+    else res.writeHead(404).end("Not found");
   });
-  fs.createReadStream(filePath).pipe(res);
+  stream.once("open", () => {
+    res.writeHead(200, {
+      "content-type": MIME[ext] ?? "application/octet-stream",
+      "cache-control": ext === ".html" ? "no-store" : "public, max-age=31536000, immutable",
+    });
+    stream.pipe(res);
+  });
+  res.on("close", () => stream.destroy());
 }
 
 async function handleApi(req, res, url, opts) {
@@ -198,15 +233,24 @@ export const STABLE_PORTS = [41763, 41764, 41765, 41766, 41767, 41768, 41769, 41
 
 /* Start the server. Returns { server, port, url }. `distDir` defaults to the
    sibling dist/ (works in dev and when packaged with app.asar layout).
-   `ports` — try each candidate in order (EADDRINUSE → next); `port` is the
+   `ports` — try each candidate in order (a refused port → next); `port` is the
    one-candidate shorthand. `publik` — { token, appVersion, credentialFile?,
    baseUrl?, fetchImpl? } for the publik credential + proxy routes.
    `fetchPage` — { maxBytes?, timeoutMs?, resolve?, allowHosts? } for
    /api/fetch-page (tests only; see fetchPage.mjs).
    `mediaDir` — where the trimmed lecture videos are kept; `lecture` —
    { ffmpeg?, ytdlp?, trim? } for /api/lecture/* (tests only; see lecture.mjs);
-   `explainer` — { ffmpeg?, render? } for /api/explainer/* (tests only). */
-export function startServer({ distDir, binDir, mediaDir, port = 0, ports, host = "127.0.0.1", publik = {}, fetchPage = {}, lecture = {}, explainer = {} } = {}) {
+   `explainer` — { ffmpeg?, render? } for /api/explainer/* (tests only);
+   `onError` — gets every error a request (or the server) had; the desktop
+   shell writes it to its crash log. */
+export function startServer({ distDir, binDir, mediaDir, port = 0, ports, host = "127.0.0.1", publik = {}, fetchPage = {}, lecture = {}, explainer = {}, onError = () => {} } = {}) {
+  const report = (err) => {
+    try {
+      onError(err);
+    } catch {
+      /* the reporter must not be a new error */
+    }
+  };
   const resolvedDist = distDir ?? path.join(__dirname, "..", "dist");
   const candidates = Array.isArray(ports) && ports.length ? ports : [port];
   const handlePublik = createPublikHandler(publik);
@@ -216,18 +260,32 @@ export function startServer({ distDir, binDir, mediaDir, port = 0, ports, host =
   // Delete it now (see ytdlp.mjs).
   if (binDir) cleanOldYtdlp(binDir);
 
+  // Nothing may throw out of this listener: in the desktop app that is an
+  // uncaught exception in the Electron main process.
   const server = http.createServer((req, res) => {
-    const url = new URL(req.url ?? "/", `http://${host}`);
-    if (url.pathname.startsWith("/api/")) {
-      const refused = refuseLocalRequest(req, url.pathname, server.address()?.port);
-      if (refused) return sendRefused(res, refused);
-      const appOrigin = `http://${host}:${server.address()?.port ?? candidates[0]}`;
-      handleApi(req, res, url, { binDir, appOrigin, publik: handlePublik, fetchPage, lecture: handleLecture, explainer: handleExplainer }).catch((err) =>
-        sendJson(res, 500, { error: err instanceof Error ? err.message : "internal error" }),
-      );
+    let url;
+    try {
+      url = new URL(req.url ?? "/", `http://${host}`);
+    } catch {
+      res.writeHead(400).end("Bad request"); // "//" and the like: not a URL
       return;
     }
-    serveStatic(resolvedDist, url.pathname, res);
+    try {
+      if (url.pathname.startsWith("/api/")) {
+        const refused = refuseLocalRequest(req, url.pathname, server.address()?.port);
+        if (refused) return sendRefused(res, refused);
+        const appOrigin = `http://${host}:${server.address()?.port ?? candidates[0]}`;
+        handleApi(req, res, url, { binDir, appOrigin, publik: handlePublik, fetchPage, lecture: handleLecture, explainer: handleExplainer }).catch((err) => {
+          report(err);
+          failRequest(res, err);
+        });
+        return;
+      }
+      serveStatic(resolvedDist, url.pathname, res);
+    } catch (err) {
+      report(err);
+      failRequest(res, err);
+    }
   });
 
   return new Promise((resolve, reject) => {
@@ -235,16 +293,36 @@ export function startServer({ distDir, binDir, mediaDir, port = 0, ports, host =
     const tryNext = () => {
       const candidate = candidates[i++];
       const onError = (err) => {
-        if (err?.code === "EADDRINUSE" && i < candidates.length) return tryNext();
+        // Any refusal moves on to the next port, not only "in use": Windows
+        // answers EACCES for a port inside a reserved range.
+        if (i < candidates.length) return tryNext();
         reject(err);
       };
       server.once("error", onError);
       server.listen(candidate, host, () => {
         server.removeListener("error", onError);
+        // A later 'error' with no listener would be an uncaught exception.
+        server.on("error", report);
         const actualPort = server.address().port;
         resolve({ server, port: actualPort, url: `http://${host}:${actualPort}` });
       });
     };
     tryNext();
+  });
+}
+
+/* Stop the server NOW. server.close() alone waits for every open request (a
+   progress stream, a video being played), so the app could not quit;
+   closeAllConnections() ends them. Resolves when the server is closed. Safe
+   to call twice, and with nothing. */
+export function stopServer(server) {
+  return new Promise((resolve) => {
+    if (!server) return resolve();
+    try {
+      server.close(() => resolve());
+      server.closeAllConnections?.();
+    } catch {
+      resolve();
+    }
   });
 }

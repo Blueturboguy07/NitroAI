@@ -14,6 +14,7 @@
  */
 
 import { spawn, execFile, execFileSync } from "node:child_process";
+import { killTree } from "./children.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -348,11 +349,9 @@ export async function status(binDir, chatModel = DEFAULT_CHAT_MODEL, embedModel 
    was already running independently is left untouched. */
 export function shutdown() {
   if (serveProc) {
-    try {
-      serveProc.kill();
-    } catch {
-      /* already gone */
-    }
+    // The whole tree: on Windows a plain kill() leaves the model runner that
+    // `ollama serve` started.
+    killTree(serveProc);
     serveProc = null;
   }
 }
