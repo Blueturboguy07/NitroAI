@@ -26,6 +26,7 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import { track } from "./children.mjs";
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -102,7 +103,7 @@ export async function findFfmpeg({ env = process.env, platform = process.platfor
    `timeoutMs` ends a run that takes longer (it then has a non-zero code). */
 export function runFfmpeg(bin, args, { signal, onSeconds, timeoutMs } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], signal, timeout: timeoutMs, killSignal: "SIGKILL", windowsHide: true });
+    const child = track(spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], signal, timeout: timeoutMs, killSignal: "SIGKILL", windowsHide: true }));
     let stderr = "";
     child.stdout.setEncoding("utf8").on("data", (text) => {
       if (!onSeconds) return;

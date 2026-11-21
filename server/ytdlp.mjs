@@ -24,6 +24,7 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import { track } from "./children.mjs";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -195,11 +196,13 @@ async function runYtdlp(bin, pin, args, signal) {
     return { ok: false, stdout: "", stderr: "yt-dlp did not match its SHA-256 and was removed. Try again." };
   }
   try {
-    const { stdout, stderr } = await execFileP(bin, [...YTDLP_SAFE_ARGS, ...args], {
+    const run = execFileP(bin, [...YTDLP_SAFE_ARGS, ...args], {
       timeout: RUN_TIMEOUT_MS,
       maxBuffer: 64 * 1024 * 1024,
       signal,
     });
+    track(run.child); // ended with the app (children.mjs)
+    const { stdout, stderr } = await run;
     return { ok: true, stdout, stderr };
   } catch (err) {
     return { ok: false, stdout: err.stdout ?? "", stderr: err.stderr ?? err.message ?? "yt-dlp failed" };
@@ -310,7 +313,7 @@ export async function downloadLecture(url, binDir, outDir, opts = {}) {
     "-o", outTmpl, "--", url,
   ];
   await new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], signal, timeout: DOWNLOAD_TIMEOUT_MS, windowsHide: true });
+    const child = track(spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"], signal, timeout: DOWNLOAD_TIMEOUT_MS, windowsHide: true }));
     let err = "";
     // yt-dlp counts 0-100% for the picture file, then again for the (small)
     // sound file. One line that only goes up: 90% picture, 10% sound.
